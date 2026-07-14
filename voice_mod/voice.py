@@ -517,6 +517,39 @@ class VoiceMod(Node):
 
         self.pub = self.create_publisher(Float32MultiArray, self.output_topic, 10)
         self.diag_pub = self.create_publisher(String, "/voice_mod/diagnostics", 10)
+
+        # Lightweight per-mic level tap for the demo dashboard: publishes each
+        # microphone's post-resample, pre-beamform RMS on a fast cadence
+        # (default every 0.2 s) so a UI can render live VU meters without
+        # shipping any audio. Cheap — one RMS per popped block.
+        self.declare_parameter("levels_topic", "/voice_mod/levels")
+        self.declare_parameter("levels_period", 0.2, dyn)
+        self.levels_topic = self.get_parameter("levels_topic").value
+        self.levels_period = float(self.get_parameter("levels_period").value)
+        self.levels_pub = self.create_publisher(
+            Float32MultiArray, self.levels_topic, 10)
+        self._last_levels = time.monotonic()
+        self._levels_val = [0.0] * self.num_channels
+
+        # Fast raw tap for the demo dashboard's live "before" spectrogram: a
+        # down-mixed mono chunk published every raw_fast_period (~8 Hz),
+        # decoupled from the whole-signal beamformer frame so the raw panel can
+        # scroll smoothly. Viz-only and mono; per-mic playback still uses the
+        # full-rate multichannel /dorai_raw_audio frame. Off by default.
+        self.declare_parameter("publish_raw_fast", False)
+        self.declare_parameter("raw_fast_topic", "/dorai_raw_fast")
+        # Default below the 0.1 s worker tick so a chunk goes out every tick
+        # (~10 Hz). Raise it on a CPU-tight Pi to trade smoothness for load.
+        self.declare_parameter("raw_fast_period", 0.05, dyn)
+        self.publish_raw_fast = bool(self.get_parameter("publish_raw_fast").value)
+        self.raw_fast_topic = self.get_parameter("raw_fast_topic").value
+        self.raw_fast_period = float(self.get_parameter("raw_fast_period").value)
+        self.raw_fast_pub = (
+            self.create_publisher(Float32MultiArray, self.raw_fast_topic, 10)
+            if self.publish_raw_fast else None)
+        self._fast_acc = []              # mono blocks pending fast publish
+        self._last_fast = time.monotonic()
+        self._fast_seq = 0
         self.raw_pub = None
         if self.publish_raw:
             self.raw_pub = self.create_publisher(
@@ -738,6 +771,12 @@ class VoiceMod(Node):
         n_blocks = max(0, (min_fifo - TARGET_OUT) // L_OUT)
         for _ in range(int(n_blocks)):
             block = np.stack([ch.pop_block() for ch in self.mics], axis=0)
+            # Per-mic RMS for the live level meters (latest block wins).
+            self._levels_val = np.sqrt(
+                np.mean(block.astype(np.float64) ** 2, axis=1)).tolist()
+            # Down-mixed mono block for the fast raw-spectrogram tap.
+            if self.raw_fast_pub is not None:
+                self._fast_acc.append(block.mean(axis=0).astype(np.float32))
             with self.mics[0].lock:
                 cap = self.mics[0].last_capture_mono
             capture_s = (cap or time.monotonic()) - self._t0
@@ -756,6 +795,28 @@ class VoiceMod(Node):
                 del self._mc_acc[:self._frame_blocks]
                 del self._mc_caps[:self._frame_blocks]
             self._enqueue((blocks, cap0, time.monotonic()))
+
+        now = time.monotonic()
+        if now - self._last_levels >= self.levels_period:
+            self._last_levels = now
+            lv = Float32MultiArray()
+            lv.data = [float(v) for v in self._levels_val]
+            self.levels_pub.publish(lv)
+
+        # Fast raw tap: flush the accumulated mono down-mix as one small chunk.
+        if (self.raw_fast_pub is not None and self._fast_acc
+                and now - self._last_fast >= self.raw_fast_period):
+            self._last_fast = now
+            chunk = np.concatenate(self._fast_acc)
+            self._fast_acc = []
+            fmsg = Float32MultiArray()
+            header = np.array(
+                [0.0, float(OUTPUT_RATE), 1.0, float(self._fast_seq)],
+                dtype=np.float32)
+            fmsg.data = np.concatenate((header, chunk)).tolist()
+            fmsg.layout.data_offset = 4
+            self.raw_fast_pub.publish(fmsg)
+            self._fast_seq += 1
 
         self._maybe_diag(time.monotonic())
 
