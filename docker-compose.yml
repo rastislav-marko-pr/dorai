@@ -33,10 +33,17 @@ services:
     # as a dead channel and collapse the beamformer. Set it to a substring of
     # your mics' name (here the PU425 lavaliers enumerate as "Earpods"); clear
     # it (-p mic_name_filter:="") to fall back to plain auto-detection.
+    # publish_raw + a short publish_interval are for the demo dashboard: the raw
+    # multichannel tap feeds the "before" spectrogram, and 2 s frames make the
+    # visuals/transcript feel live. Drop both (or raise the interval) for a
+    # production run that only needs /dorai_clean_audio.
     command: >
       ros2 run voice_mod voice --ros-args
       -p max_mics:=4
       -p mic_name_filter:=Earpods
+      -p publish_raw:=true
+      -p publish_raw_fast:=true
+      -p publish_interval:=0.5
     restart: unless-stopped
 
   stt:
@@ -55,6 +62,38 @@ services:
       ros2 run stt_mod stt --ros-args
       -p engine:=vosk
       -p model_lang:=en-us
+    restart: unless-stopped
+
+  # Demo dashboard — subscribes to the pipeline topics and serves a single-page
+  # web UI at http://<robot-ip>:8080 (mic level meters, raw-vs-clean
+  # spectrograms, live transcript, per-mic diagnostics). "Play raw/clean"
+  # buttons audition the last frame through the robot's OWN speakers, so
+  # /dev/snd is mapped here too for audio OUTPUT.
+  web:
+    build: .
+    image: dorai:latest
+    network_mode: host
+    ipc: host        # shared /dev/shm — see note on the voice service
+    devices:
+      - /dev/snd:/dev/snd
+    group_add:
+      - audio
+    environment:
+      - ROS_DOMAIN_ID=0
+    # play_device pins the speaker output by device-name substring (list form so
+    # a name with a space stays one argument). On atb the speakers are on the
+    # onboard analog jack "HDA Intel PCH: ALC700 Analog"; the ALSA/sounddevice
+    # default did not reach them. Change/remove it for other hosts.
+    command:
+      - ros2
+      - run
+      - web_mod
+      - web
+      - --ros-args
+      - -p
+      - port:=${DORAI_WEB_PORT:-8080}
+      - -p
+      - play_device:=ALC700 Analog
     restart: unless-stopped
 
 volumes:

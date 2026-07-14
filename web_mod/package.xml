@@ -1,0 +1,33 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>web_mod</name>
+  <version>0.1.0</version>
+  <description>
+    dorai demo dashboard. A headless-friendly web interface that subscribes to
+    the voice_mod / stt_mod topics and renders a live view of the mic-array
+    capture and beamformer output: per-mic level meters, raw-vs-clean
+    spectrograms/waveforms, a streaming transcript, and per-mic drift/health
+    diagnostics. Audio auditioning (raw vs clean) plays back through the robot's
+    own speakers, so nothing but a browser is needed on the client side.
+  </description>
+  <maintainer email="info@sensifai.com">Sensifai</maintainer>
+  <license>None</license>
+
+  <depend>rclpy</depend>
+  <depend>std_msgs</depend>
+
+  <!-- Pure-python runtime deps installed via pip (rosdep keys do not cover
+       aiohttp / sounddevice); listed here for documentation. -->
+  <exec_depend>python3-numpy</exec_depend>
+  <exec_depend>python3-scipy</exec_depend>
+
+  <test_depend>ament_copyright</test_depend>
+  <test_depend>ament_flake8</test_depend>
+  <test_depend>ament_pep257</test_depend>
+  <test_depend>python3-pytest</test_depend>
+
+  <export>
+    <build_type>ament_python</build_type>
+  </export>
+</package>

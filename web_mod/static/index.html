@@ -1,0 +1,286 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>dorai — mic-array &amp; beamformer demo</title>
+<style>
+  :root{
+    --bg:#0d1117; --panel:#161b22; --edge:#232c38; --ink:#e6edf3;
+    --dim:#8b949e; --accent:#4dd0e1; --clean:#7ee787; --raw:#ff9e64;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);
+    font:14px/1.5 system-ui,Segoe UI,Roboto,sans-serif}
+  header{display:flex;align-items:center;gap:16px;flex-wrap:wrap;
+    padding:12px 20px;background:var(--panel);border-bottom:1px solid var(--edge)}
+  header h1{font-size:16px;margin:0;font-weight:600;letter-spacing:.3px}
+  header h1 span{color:var(--accent)}
+  .pill{font-size:12px;color:var(--dim);background:#0d1117;border:1px solid var(--edge);
+    padding:3px 9px;border-radius:999px}
+  .pill b{color:var(--ink);font-weight:600}
+  #dot{width:9px;height:9px;border-radius:50%;background:#f85149;display:inline-block;
+    margin-right:6px;vertical-align:middle}
+  #dot.on{background:var(--clean);box-shadow:0 0 8px var(--clean)}
+  main{display:grid;gap:16px;padding:16px 20px;max-width:1200px;margin:0 auto}
+  .panel{background:var(--panel);border:1px solid var(--edge);border-radius:10px;padding:14px 16px}
+  .panel h2{margin:0 0 10px;font-size:13px;font-weight:600;color:var(--dim);
+    text-transform:uppercase;letter-spacing:.6px}
+  .ba{display:grid;grid-template-columns:1fr 1fr;gap:16px}
+  @media(max-width:820px){.ba{grid-template-columns:1fr}}
+  .stage h3{margin:0 0 8px;font-size:13px}
+  .stage h3.raw{color:var(--raw)} .stage h3.clean{color:var(--clean)}
+  canvas.spec{width:100%;height:150px;background:#05070a;border-radius:6px;display:block;
+    image-rendering:pixelated}
+  canvas.wave{width:100%;height:44px;background:#05070a;border-radius:6px;display:block;margin-top:6px}
+  .canvaswrap{position:relative}
+  .playhead{position:absolute;top:0;left:0;width:2px;height:100%;background:#fff;
+    box-shadow:0 0 6px rgba(255,255,255,.85);pointer-events:none;display:none;
+    transform:translateX(0);will-change:transform}
+  .ctl{display:flex;gap:8px;align-items:center;margin-top:10px;flex-wrap:wrap}
+  button{background:#21262d;color:var(--ink);border:1px solid var(--edge);border-radius:6px;
+    padding:6px 14px;font-size:13px;cursor:pointer}
+  button:hover{border-color:var(--accent);color:var(--accent)}
+  button.play{background:#1b3a2a;border-color:#2ea043}
+  button.play:hover{color:var(--clean);border-color:var(--clean)}
+  select{background:#0d1117;color:var(--ink);border:1px solid var(--edge);border-radius:6px;padding:6px 8px}
+  .meters{display:flex;flex-direction:column;gap:8px}
+  .meter{display:grid;grid-template-columns:64px 1fr 56px;align-items:center;gap:10px}
+  .meter .name{color:var(--dim);font-variant-numeric:tabular-nums}
+  .bar{height:16px;background:#05070a;border-radius:4px;overflow:hidden;position:relative}
+  .bar>i{position:absolute;left:0;top:0;bottom:0;width:0%;border-radius:4px;
+    background:linear-gradient(90deg,#2ea043,#d4c430 72%,#f85149);transition:width .1s linear}
+  .meter .db{text-align:right;color:var(--dim);font-variant-numeric:tabular-nums;font-size:12px}
+  #tx{height:200px;overflow-y:auto;background:#05070a;border-radius:6px;padding:10px 12px;
+    font-size:15px;line-height:1.6}
+  #tx .line{margin-bottom:4px}
+  #tx .t{color:#586069;font-size:11px;margin-right:8px;font-variant-numeric:tabular-nums}
+  #tx .partial{color:var(--dim);font-style:italic}
+  #diag{white-space:pre-wrap;color:var(--dim);font:12px/1.5 ui-monospace,Menlo,monospace;
+    background:#05070a;border-radius:6px;padding:10px 12px;overflow-x:auto}
+  .hint{color:var(--dim);font-size:12px;margin:4px 0 0}
+  button:disabled{opacity:.4;cursor:default}
+  button:disabled:hover{border-color:var(--edge);color:var(--ink)}
+  .badge{font-size:12px;font-weight:600;padding:4px 10px;border-radius:999px;letter-spacing:.4px}
+  .badge.live{color:#0d1117;background:var(--clean)}
+  .badge.froz{color:#0d1117;background:var(--raw)}
+  .ba.frozen{outline:2px dashed var(--raw);outline-offset:6px;border-radius:8px}
+</style>
+</head>
+<body>
+<header>
+  <h1>dorai <span>mic-array &amp; beamformer</span></h1>
+  <span class="pill"><span id="dot"></span><b id="conn">connecting…</b></span>
+  <span class="pill">mics <b id="nmic">–</b></span>
+  <span class="pill">rate <b>16 kHz</b></span>
+  <span class="pill">frame <b id="dur">–</b></span>
+  <span class="pill">seq <b id="seq">–</b></span>
+</header>
+
+<main>
+  <section class="panel">
+    <h2>Live mic-array levels</h2>
+    <div id="meters" class="meters"></div>
+    <p class="hint">Post-resample, pre-beamform level of each captured microphone. Speak near one mic to see its bar move.</p>
+  </section>
+
+  <section class="panel">
+    <h2>Beamformer — before vs. after</h2>
+    <div class="ctl" style="margin-bottom:12px">
+      <button id="btnLive" class="play" onclick="setLive(true)">▶ Start (Live)</button>
+      <button id="btnStop" onclick="setLive(false)">⏸ Stop (Freeze)</button>
+      <span id="pipeState" class="badge live">● LIVE</span>
+      <span class="hint">Freeze latches the last few seconds so you can replay just that part.</span>
+    </div>
+    <div class="ba" id="ba">
+      <div class="stage">
+        <h3 class="raw">◢ RAW array (down-mixed)</h3>
+        <div class="canvaswrap">
+          <canvas class="spec" id="rawSpec"></canvas>
+          <canvas class="wave" id="rawWave"></canvas>
+          <div class="playhead" id="rawHead"></div>
+        </div>
+        <div class="ctl">
+          <select id="rawSel"><option value="-1">down-mix</option></select>
+          <button class="play" onclick="play('raw')">▶ Play raw</button>
+        </div>
+      </div>
+      <div class="stage">
+        <h3 class="clean">◤ CLEAN beamformer output</h3>
+        <div class="canvaswrap">
+          <canvas class="spec" id="clnSpec"></canvas>
+          <canvas class="wave" id="clnWave"></canvas>
+          <div class="playhead" id="clnHead"></div>
+        </div>
+        <div class="ctl">
+          <button class="play" onclick="play('clean')">▶ Play clean</button>
+          <button onclick="stopAudio()">■ Stop</button>
+          <span id="ack" class="hint"></span>
+        </div>
+      </div>
+    </div>
+    <p class="hint">Playback comes out of the robot's own speakers. Broadband factory/welding noise fills the raw panel; the clean panel keeps the speech harmonics and drops the noise floor.</p>
+  </section>
+
+  <section class="panel">
+    <h2>Live transcript</h2>
+    <div id="tx"></div>
+  </section>
+
+  <section class="panel">
+    <h2>Array diagnostics</h2>
+    <div id="diag">waiting for /voice_mod/diagnostics …</div>
+  </section>
+</main>
+
+<script>
+// ---- spectrogram colormap (inferno-ish stops), precomputed to a 256 LUT ---
+const CMAP=[[0,0,4],[40,11,84],[101,21,110],[159,42,99],[212,72,66],[245,125,21],[250,193,39],[252,255,164]];
+const LUT=new Uint8Array(256*3);
+for(let i=0;i<256;i++){ const x=i/255*(CMAP.length-1), j=Math.floor(x), f=x-j,
+  a=CMAP[j], b=CMAP[Math.min(j+1,CMAP.length-1)];
+  LUT[i*3]=a[0]+(b[0]-a[0])*f; LUT[i*3+1]=a[1]+(b[1]-a[1])*f; LUT[i*3+2]=a[2]+(b[2]-a[2])*f; }
+function b64bytes(s){ const bin=atob(s), n=bin.length, out=new Uint8Array(n);
+  for(let i=0;i<n;i++) out[i]=bin.charCodeAt(i); return out; }
+function drawSpec(canvas, spec){
+  if(!spec||!spec.w||!spec.h||!spec.b64) return;
+  // Reuse a per-canvas offscreen + ImageData (no per-frame allocation); map
+  // bytes through the LUT and leave the alpha channel at 255 (set once).
+  let off=canvas._off;
+  if(!off||off.width!==spec.w||off.height!==spec.h){
+    off=canvas._off=document.createElement('canvas'); off.width=spec.w; off.height=spec.h;
+    canvas._ictx=off.getContext('2d');
+    canvas._img=canvas._ictx.createImageData(spec.w,spec.h); canvas._img.data.fill(255);
+  }
+  const d=b64bytes(spec.b64), px=canvas._img.data;
+  for(let k=0,p=0;k<d.length;k++,p+=4){ const c=d[k]*3; px[p]=LUT[c]; px[p+1]=LUT[c+1]; px[p+2]=LUT[c+2]; }
+  canvas._ictx.putImageData(canvas._img,0,0);
+  const r=canvas.getBoundingClientRect(), w=Math.round(r.width), h=Math.round(r.height);
+  if(canvas.width!==w||canvas.height!==h){ canvas.width=w; canvas.height=h; }
+  const ctx=canvas.getContext('2d'); ctx.imageSmoothingEnabled=false;
+  ctx.drawImage(off,0,0,spec.w,spec.h,0,0,w,h);
+}
+function drawWave(canvas, env, col){
+  const ctx=canvas.getContext('2d'); const r=canvas.getBoundingClientRect();
+  canvas.width=r.width; canvas.height=r.height;
+  const w=canvas.width, h=canvas.height, mid=h/2, n=env.length;
+  ctx.clearRect(0,0,w,h); ctx.fillStyle=col;
+  for(let i=0;i<n;i++){ const x=i/n*w, a=env[i]*mid; ctx.fillRect(x,mid-a,Math.max(1,w/n),a*2); }
+}
+
+// ---- mic meters ----------------------------------------------------------
+let meterEls=[], nmic=0;
+function buildMeters(n){
+  if(n===nmic) return; nmic=n;
+  const box=document.getElementById('meters'); box.innerHTML=''; meterEls=[];
+  const sel=document.getElementById('rawSel');
+  sel.innerHTML='<option value="-1">down-mix</option>';
+  for(let i=0;i<n;i++){
+    const row=document.createElement('div'); row.className='meter';
+    row.innerHTML=`<span class="name">mic${i}</span><div class="bar"><i></i></div><span class="db">–∞</span>`;
+    box.appendChild(row);
+    meterEls.push({fill:row.querySelector('i'), db:row.querySelector('.db')});
+    const o=document.createElement('option'); o.value=i; o.textContent='mic'+i; sel.appendChild(o);
+  }
+  document.getElementById('nmic').textContent=n;
+}
+function setLevels(rms){
+  buildMeters(rms.length);
+  rms.forEach((v,i)=>{
+    const db = v>1e-7 ? 20*Math.log10(v) : -99;
+    const pct = Math.max(0, Math.min(100, (db+60)/60*100));
+    meterEls[i].fill.style.width=pct+'%';
+    meterEls[i].db.textContent = db<=-99 ? '–∞' : db.toFixed(0)+' dB';
+  });
+}
+
+// ---- transcript ----------------------------------------------------------
+const txBox=document.getElementById('tx'); let partialEl=null;
+function clock(){ const d=new Date(); return d.toTimeString().slice(0,8); }
+function addFinal(text){
+  if(!text) return;
+  if(partialEl){ partialEl.remove(); partialEl=null; }
+  const l=document.createElement('div'); l.className='line';
+  l.innerHTML=`<span class="t">${clock()}</span>${text}`;
+  txBox.appendChild(l); txBox.scrollTop=txBox.scrollHeight;
+}
+function setPartial(text){
+  if(!text){ if(partialEl){partialEl.remove();partialEl=null;} return; }
+  if(!partialEl){ partialEl=document.createElement('div'); partialEl.className='line partial'; txBox.appendChild(partialEl); }
+  partialEl.textContent='… '+text; txBox.scrollTop=txBox.scrollHeight;
+}
+
+// ---- websocket -----------------------------------------------------------
+let ws;
+function connect(){
+  ws=new WebSocket((location.protocol==='https:'?'wss://':'ws://')+location.host+'/ws');
+  ws.onopen =()=>{ document.getElementById('dot').classList.add('on');
+    document.getElementById('conn').textContent='live'; };
+  ws.onclose=()=>{ document.getElementById('dot').classList.remove('on');
+    document.getElementById('conn').textContent='reconnecting…'; setTimeout(connect,1500); };
+  ws.onmessage=(e)=>{
+    const m=JSON.parse(e.data);
+    switch(m.type){
+      case 'levels': setLevels(m.rms); break;
+      case 'rawlive':   // fast tap -> smooth scrolling "before" panel
+        drawSpec(document.getElementById('rawSpec'), m.spec);
+        drawWave(document.getElementById('rawWave'), m.wave, '#ff9e64');
+        break;
+      case 'raw':       // frozen-snapshot repaint (per-mic waveforms)
+        if(m.mics) buildMeters(m.mics);
+        drawSpec(document.getElementById('rawSpec'), m.spec);
+        drawWave(document.getElementById('rawWave'), m.waves[Math.max(0,+document.getElementById('rawSel').value)]||m.waves[0], '#ff9e64');
+        break;
+      case 'clean':
+        if(m.seq>=0) document.getElementById('seq').textContent=m.seq;
+        document.getElementById('dur').textContent=m.dur+' s';
+        drawSpec(document.getElementById('clnSpec'), m.spec);
+        drawWave(document.getElementById('clnWave'), m.wave, '#7ee787');
+        break;
+      case 'transcript': addFinal(m.text); break;
+      case 'partial': setPartial(m.text); break;
+      case 'diag': document.getElementById('diag').textContent=m.text; break;
+      case 'state': applyState(m); break;
+      case 'play':
+        document.getElementById('ack').textContent=m.status||'';
+        if(m.status==='playing') startPlayhead(m.which,m.dur); else stopPlayhead();
+        break;
+      case 'ack': document.getElementById('ack').textContent=m.status; break;
+    }
+  };
+}
+// ---- playback position indicator (server plays; we animate the sweep) -----
+function startPlayhead(which,dur){
+  stopPlayhead();
+  if(!(dur>0)) return;
+  const head=document.getElementById(which==='clean'?'clnHead':'rawHead');
+  const wrap=head.parentElement, t0=performance.now();
+  head.style.display='block';
+  (function step(now){
+    const e=(now-t0)/1000;
+    if(e>=dur){ head.style.display='none'; head._raf=0; return; }
+    head.style.transform='translateX('+(e/dur*wrap.clientWidth)+'px)';
+    head._raf=requestAnimationFrame(step);
+  })(t0);
+}
+function stopPlayhead(){ ['rawHead','clnHead'].forEach(id=>{ const h=document.getElementById(id);
+  if(h._raf) cancelAnimationFrame(h._raf); h._raf=0; h.style.display='none'; }); }
+// ---- pipeline freeze / live ----------------------------------------------
+let frozen=false;
+function setLive(live){ if(ws&&ws.readyState===1) ws.send(JSON.stringify({cmd: live?'live':'freeze'})); }
+function applyState(s){
+  frozen=!!s.frozen;
+  document.getElementById('btnLive').disabled=!frozen;
+  document.getElementById('btnStop').disabled=frozen;
+  const badge=document.getElementById('pipeState');
+  badge.textContent=frozen?('❚❚ FROZEN'+(s.dur?' · '+(+s.dur).toFixed(1)+'s':'')):'● LIVE';
+  badge.className='badge '+(frozen?'froz':'live');
+  document.getElementById('ba').classList.toggle('frozen',frozen);
+}
+function play(which){ if(ws&&ws.readyState===1)
+  ws.send(JSON.stringify({cmd:'play',which,mic:+document.getElementById('rawSel').value})); }
+function stopAudio(){ if(ws&&ws.readyState===1) ws.send(JSON.stringify({cmd:'stop'})); }
+connect();
+</script>
+</body>
+</html>

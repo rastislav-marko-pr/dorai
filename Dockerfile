@@ -32,12 +32,14 @@ RUN pip3 install --no-cache-dir --break-system-packages \
         sounddevice \
         samplerate \
         vosk \
-        faster-whisper
+        faster-whisper \
+        aiohttp
 
 # --- Build the ROS 2 workspace ----------------------------------------------
 WORKDIR /ros2_ws
 COPY voice_mod src/voice_mod
 COPY stt_mod   src/stt_mod
+COPY web_mod   src/web_mod
 
 # Source the ROS base, then colcon-build both ament_python packages.
 RUN . /opt/ros/jazzy/setup.sh && \
