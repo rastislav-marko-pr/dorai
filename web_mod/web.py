@@ -15,6 +15,8 @@ What it shows / does:
   * "Play raw" / "Play clean" buttons that audition the last frame through the
     ROBOT's own speakers (server-side sounddevice output) — the client only
     needs a browser, no audio round-trip.
+  * "Save clips" downloads the on-screen raw+clean windows as WAVs (zipped) to
+    the operator's machine, so a frozen demo can be mailed to someone.
 
 Architecture:
   * rclpy spins on a background thread; topic callbacks compute compact,
@@ -28,9 +30,13 @@ Architecture:
 """
 
 import os
+import io
+import time
 import json
+import wave
 import base64
 import asyncio
+import zipfile
 import threading
 
 import numpy as np
@@ -127,6 +133,25 @@ def spectrogram(x, sr=OUTPUT_RATE):
         "b64": base64.b64encode(np.ascontiguousarray(img).tobytes()).decode("ascii"),
         "fmax": int(sr // 2),
     }
+
+
+def wav_bytes(x, rate=OUTPUT_RATE):
+    """Encode a float32 mono signal as an in-memory 16-bit PCM WAV.
+
+    Amplitude is preserved (only hard-clipped) — deliberately unlike play(),
+    which peak-normalizes each buffer to make quiet raw audio audible. Doing
+    that here would lift the noisy raw clip and the clean clip to the SAME
+    loudness and destroy the very level difference the pair is meant to show.
+    """
+    x = np.asarray(x, dtype=np.float32)
+    pcm = (np.clip(x, -1.0, 1.0) * 32767.0).astype(np.int16)
+    bio = io.BytesIO()
+    with wave.open(bio, "wb") as w:
+        w.setnchannels(1)
+        w.setsampwidth(2)               # 16-bit
+        w.setframerate(int(rate))
+        w.writeframes(pcm.tobytes())
+    return bio.getvalue()
 
 
 def parse_multiarray(msg):
@@ -421,6 +446,93 @@ def make_app(hub, static_dir):
     async def index(_req):
         return aioweb.FileResponse(index_path)
 
+    # ---- save: hand the operator the exact window that is on screen ---------
+    # Everything here reads through hub.get_play_buffer(), the same accessor the
+    # Play commands use, so a download is byte-identical to what the frozen
+    # panels show and play — freeze, audition, save, and you know what you got.
+    # While LIVE the same call snapshots the current rolling window instead.
+    # Audio leaves as a file to the OPERATOR's machine (Play sends it to the
+    # robot's speakers), which is what makes a clip forwardable to someone else.
+    def _mic_arg(req):
+        """Parse ?mic=N, mirroring play()'s convention: absent or negative means
+        the down-mix, >=0 selects that single microphone. Rejects junk with 400
+        rather than silently falling back, so a typo'd URL is not mistaken for
+        a deliberate down-mix request."""
+        v = req.query.get("mic")
+        if v in (None, ""):
+            return None
+        try:
+            m = int(v)
+        except ValueError:
+            raise aioweb.HTTPBadRequest(text="mic must be an integer")
+        return None if m < 0 else m          # <0 == down-mix, as in play()
+
+    def _clip(which, mic=None):
+        """Fetch one buffer (frozen window if frozen, else live), collapsing
+        'missing' and 'present but empty' to a single None so callers have just
+        one nothing-to-save case to handle."""
+        buf = hub.get_play_buffer(which, mic)
+        return buf if buf is not None and buf.size else None
+
+    def _attach(body, name, ctype):
+        """Wrap bytes as a download. Content-Disposition: attachment is the bit
+        that makes a browser save the file (with our timestamped name) instead
+        of trying to render or stream it in place."""
+        return aioweb.Response(
+            body=body, content_type=ctype,
+            headers={"Content-Disposition": f'attachment; filename="{name}"'})
+
+    async def save_one(req):
+        """GET /save/{raw|clean}.wav[?mic=N] — a single clip.
+
+        Mainly for scripting the robot from a shell (curl -OJ ...); the UI
+        button uses the zip below. 409 (not 404) when nothing is buffered yet:
+        the route is fine, the pipeline just has not produced audio.
+        """
+        which = req.match_info["which"]
+        if which not in ("raw", "clean"):
+            raise aioweb.HTTPNotFound(text="which must be 'raw' or 'clean'")
+        mic = _mic_arg(req)
+        buf = _clip(which, mic)
+        if buf is None:
+            raise aioweb.HTTPConflict(text=f"no {which} audio buffered yet")
+        # Name per-mic saves distinctly so several downloads never collide in
+        # the browser's folder; clean is single-channel and takes no mic tag.
+        tag = which if which == "clean" or mic is None else f"{which}_mic{mic}"
+        stamp = time.strftime("%Y%m%d-%H%M%S")
+        return _attach(wav_bytes(buf), f"dorai_{stamp}_{tag}.wav", "audio/wav")
+
+    async def save_zip(req):
+        """GET /save.zip[?mic=N] — the before/after pair in one file.
+
+        What the Save button calls. One attachment beats two downloads: it is a
+        single thing to mail, it keeps the raw/clean pair together (they are
+        only meaningful side by side), and it dodges the browser's
+        "allow multiple downloads?" prompt.
+        """
+        mic = _mic_arg(req)
+        rawname = "raw.wav" if mic is None else f"raw_mic{mic}.wav"
+        clips = [(rawname, _clip("raw", mic)), ("clean.wav", _clip("clean"))]
+        # Ship whatever exists: early in a run the clean topic can lag the raw
+        # tap, and half a demo is more useful than a refusal.
+        clips = [(n, b) for n, b in clips if b is not None]
+        if not clips:
+            raise aioweb.HTTPConflict(
+                text="no audio buffered yet — press Start (Live) and speak first")
+        # One timestamp for the whole bundle: the zip and both members carry the
+        # same stamp, so a mailed pair stays identifiable after it is unzipped.
+        stamp = time.strftime("%Y%m%d-%H%M%S")
+        bio = io.BytesIO()
+        # Built in memory — the container has no writable volume mounted, and a
+        # 3 s bundle is ~200 kB, so there is nothing to gain from touching disk.
+        # DEFLATE is worth it: PCM speech (and silence) shrinks a lot.
+        with zipfile.ZipFile(bio, "w", zipfile.ZIP_DEFLATED) as z:
+            for n, b in clips:
+                z.writestr(f"dorai_{stamp}_{n}", wav_bytes(b))
+        if hub.logger:
+            hub.logger.info(f"saved {len(clips)} clip(s) -> dorai_{stamp}_clips.zip")
+        return _attach(bio.getvalue(), f"dorai_{stamp}_clips.zip", "application/zip")
+
     async def ws_handler(req):
         ws = aioweb.WebSocketResponse(max_msg_size=0)
         await ws.prepare(req)
@@ -468,6 +580,11 @@ def make_app(hub, static_dir):
 
     app.router.add_get("/", index)
     app.router.add_get("/ws", ws_handler)
+    # Saves are plain GETs, not WebSocket commands: that hands the browser a
+    # real HTTP response it can turn into a file, and makes the clips reachable
+    # with curl from any box on the LAN.
+    app.router.add_get("/save.zip", save_zip)
+    app.router.add_get("/save/{which}.wav", save_one)
     return app
 
 

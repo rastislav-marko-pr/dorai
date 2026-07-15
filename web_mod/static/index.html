@@ -89,8 +89,11 @@
     <div class="ctl" style="margin-bottom:12px">
       <button id="btnLive" class="play" onclick="setLive(true)">▶ Start (Live)</button>
       <button id="btnStop" onclick="setLive(false)">⏸ Stop (Freeze)</button>
+      <button id="btnSave" onclick="saveClips()">💾 Save clips</button>
       <span id="pipeState" class="badge live">● LIVE</span>
-      <span class="hint">Freeze latches the last few seconds so you can replay just that part.</span>
+      <span id="saveAck" class="hint"></span>
+      <span class="hint">Freeze latches the last few seconds so you can replay just that part;
+        Save downloads that same window as raw + clean WAVs.</span>
     </div>
     <div class="ba" id="ba">
       <div class="stage">
@@ -280,6 +283,36 @@ function applyState(s){
 function play(which){ if(ws&&ws.readyState===1)
   ws.send(JSON.stringify({cmd:'play',which,mic:+document.getElementById('rawSel').value})); }
 function stopAudio(){ if(ws&&ws.readyState===1) ws.send(JSON.stringify({cmd:'stop'})); }
+// ---- save the on-screen window as WAVs -----------------------------------
+// Downloads /save.zip (raw + clean) to THIS machine — unlike Play, which comes
+// out of the robot's speakers. Honours the mic selector, so what you save is
+// the channel you are looking at.
+//
+// fetch() rather than a plain <a href>: a plain link would navigate the whole
+// dashboard to an error page on a 409 ("nothing buffered yet"), killing the
+// WebSocket. Fetching lets a failure land in the status hint and leave the live
+// view alone — the cost is having to trigger the download by hand below.
+async function saveClips(){
+  const ack=document.getElementById('saveAck'), btn=document.getElementById('btnSave');
+  const mic=+document.getElementById('rawSel').value;
+  btn.disabled=true; ack.textContent='saving…';   // zip is built server-side
+  try{
+    const r=await fetch('/save.zip?mic='+mic);
+    if(!r.ok){ ack.textContent=await r.text(); return; }   // 409 text is the hint
+    const blob=await r.blob();
+    // Reuse the server's timestamped filename so saves never overwrite each
+    // other; fall back only if the header is somehow absent.
+    const cd=r.headers.get('Content-Disposition')||'';
+    const name=(cd.match(/filename="([^"]+)"/)||[,'dorai_clips.zip'])[1];
+    // Synthesize a click on a throwaway blob link — the standard way to hand a
+    // fetched body to the browser's downloader.
+    const url=URL.createObjectURL(blob), a=document.createElement('a');
+    a.href=url; a.download=name; document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(()=>URL.revokeObjectURL(url),1000);  // let the download start first
+    ack.textContent='saved '+name;
+  }catch(e){ ack.textContent='save failed: '+e; }
+  finally{ btn.disabled=false; }   // never leave the button stuck disabled
+}
 connect();
 </script>
 </body>
