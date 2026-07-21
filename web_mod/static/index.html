@@ -59,6 +59,10 @@
   #diag{white-space:pre-wrap;color:var(--dim);font:12px/1.5 ui-monospace,Menlo,monospace;
     background:#05070a;border-radius:6px;padding:10px 12px;overflow-x:auto}
   .hint{color:var(--dim);font-size:12px;margin:4px 0 0}
+  h2.hrow{display:flex;align-items:center;justify-content:space-between}
+  .iconbtn{background:transparent;border:1px solid var(--edge);border-radius:6px;
+    padding:2px 8px;font-size:14px;line-height:1;cursor:pointer;opacity:.7}
+  .iconbtn:hover{opacity:1;border-color:var(--raw);color:var(--raw)}
   button:disabled{opacity:.4;cursor:default}
   button:disabled:hover{border-color:var(--edge);color:var(--ink)}
   .badge{font-size:12px;font-weight:600;padding:4px 10px;border-radius:999px;letter-spacing:.4px}
@@ -126,7 +130,9 @@
   </section>
 
   <section class="panel">
-    <h2>Live transcript</h2>
+    <h2 class="hrow">Live transcript
+      <button id="txClear" class="iconbtn" title="Clear transcript" onclick="clearTranscript()">🗑</button>
+    </h2>
     <div id="tx"></div>
   </section>
 
@@ -199,6 +205,7 @@ function setLevels(rms){
 
 // ---- transcript ----------------------------------------------------------
 const txBox=document.getElementById('tx'); let partialEl=null;
+function clearTranscript(){ txBox.innerHTML=''; partialEl=null; }
 function clock(){ const d=new Date(); return d.toTimeString().slice(0,8); }
 function addFinal(text){
   if(!text) return;
