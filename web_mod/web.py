@@ -17,6 +17,9 @@ What it shows / does:
     needs a browser, no audio round-trip.
   * "Save clips" downloads the on-screen raw+clean windows as WAVs (zipped) to
     the operator's machine, so a frozen demo can be mailed to someone.
+  * direction of arrival dial + SRP-PHAT polar plot (/dorai/doa, /dorai/wake)
+  * person + robot behaviour state panel   (/dorai/person, /dorai/robot_state)
+    and, when a camera topic is configured, the detector's passthrough image.
 
 Architecture:
   * rclpy spins on a background thread; topic callbacks compute compact,
@@ -27,10 +30,15 @@ Architecture:
     commands.
   * The most recent raw [M, T] and clean [T] float frames are cached under a
     lock so a Play command can push them straight to the speaker.
+  * The four demo-bridge topics of DEMO_INTERFACES.md arrive as std_msgs/String
+    JSON, are sanitized here and forwarded verbatim-ish to the browser, which
+    owns all interpretation (staleness, frames, confidence). See the block
+    comment above sanitize_demo() for why the ageing has to happen client-side.
 """
 
 import os
 import io
+import math
 import time
 import json
 import wave
@@ -64,6 +72,11 @@ SPEC_MAX_F = 128           # spectrogram frequency bins sent to the UI
 SPEC_MAX_T = 160           # spectrogram time columns sent to the UI
 SPEC_DB_RANGE = 70.0       # dynamic range (dB below per-frame peak) shown
 RAW_LIVE_SECONDS = 3.0     # single window: live panels, freeze snapshot, replay
+
+# Demo-bridge (DEMO_INTERFACES.md) constants.
+SPECTRUM_BINS = 36         # contract: 36 SRP-PHAT bins, 10 deg per bin, [0] = 0 deg
+DEMO_STATES = ("idle", "turn", "acquire", "approach", "stopped")
+CAMERA_MAX_BYTES = 400_000  # skip absurd frames rather than stall every browser
 
 
 # ---------------------------------------------------------------------------
@@ -172,6 +185,117 @@ def parse_multiarray(msg):
 
 
 # ---------------------------------------------------------------------------
+# Demo-bridge topics (DEMO_INTERFACES.md, schema v1): /dorai/doa, /dorai/wake,
+# /dorai/person, /dorai/robot_state. All four are std_msgs/String carrying one
+# JSON object, whether published natively in ROS 2 (doa, wake) or mirrored in
+# from ROS 1 over the UDP bridge (person, robot_state).
+#
+# This layer is deliberately thin. It coerces the numbers, drops anything it
+# cannot use, and forwards; the browser owns every interpretation. One decision
+# is worth spelling out, because it is the difference between a dashboard that
+# tells the truth at demo time and one that does not:
+#
+#   We age messages by ARRIVAL, never by their `stamp`.
+#
+# The contract says `stamp` is taken at the *origin* of the data. For person and
+# robot_state that origin is atb's ROS 1 side — a different process on a machine
+# whose clock is not disciplined against this container's. Subtracting a foreign
+# stamp from local time yields a skew, not an age, and a few hundred ms of skew
+# is enough to paint a live feed permanently "stale" (or, worse, paint a dead
+# feed permanently fresh if the skew runs the other way). So the Hub records
+# time.monotonic() when a message lands, the browser records its own arrival
+# clock, and `stamp` is only ever shown as information. See ui_age() in
+# index.html for the client half of this.
+# ---------------------------------------------------------------------------
+def _num(v, default=None):
+    """float() that never raises, and never lets NaN/inf through.
+
+    Missing or junk fields collapse to `default` instead of killing the whole
+    message: at demo time a person message with a garbled score still tells the
+    audience that someone is there, and a NaN reaching the canvas silently
+    stops the needle being drawn at all with no error anywhere."""
+    try:
+        f = float(v)
+    except (TypeError, ValueError):
+        return default
+    return f if math.isfinite(f) else default
+
+
+def _clamp01(v, default=0.0):
+    f = _num(v, None)
+    return default if f is None else max(0.0, min(1.0, f))
+
+
+def sanitize_demo(topic, d):
+    """Coerce one decoded bridge object into the compact form the UI expects.
+
+    Returns None when the object is unusable. Unknown keys are dropped rather
+    than forwarded: the UI only draws what the contract defines, and at 10 Hz
+    times N browsers there is no reason to ship anything else.
+    """
+    if not isinstance(d, dict):
+        return None
+    out = {"stamp": _num(d.get("stamp"))}
+
+    if topic == "doa":
+        # `valid` missing is treated as FALSE, not True. Fail closed: a
+        # publisher that forgets the flag must not be able to promote an
+        # unreliable bearing into a confident-looking needle.
+        out["valid"] = bool(d.get("valid", False))
+        out["bearing_deg"] = _num(d.get("bearing_deg"))
+        out["confidence"] = _clamp01(d.get("confidence"))
+        spec = d.get("spectrum")
+        # The contract says to omit `spectrum` rather than send nulls, but a
+        # null or short list from a half-written publisher must not blank the panel,
+        # so anything non-numeric becomes 0.0 and a wrong-length list is used
+        # as-is (the UI lays bins out by index * 360/len, not by a hard 36).
+        if isinstance(spec, (list, tuple)) and spec:
+            out["spectrum"] = [round(max(0.0, _num(v, 0.0)), 4)
+                               for v in spec[:SPECTRUM_BINS]]
+        return out
+
+    if topic == "wake":
+        out["keyword"] = str(d.get("keyword", ""))[:40]
+        out["bearing_deg"] = _num(d.get("bearing_deg"))
+        # Contract: when no confident bearing was pairable inside the wake
+        # word's audio window, wake_mod publishes confidence 0.0 and leaves the
+        # decision to us. The UI shows the marker as "bearing unknown" rather
+        # than planting a gold wedge on a number nobody stands behind.
+        out["confidence"] = _clamp01(d.get("confidence"))
+        return out
+
+    if topic == "person":
+        present = bool(d.get("present", False))
+        out["present"] = present
+        if present:
+            out["bearing_deg"] = _num(d.get("bearing_deg"))
+            out["distance_m"] = _num(d.get("distance_m"))
+            out["score"] = _clamp01(d.get("score"))
+        # When present is False the contract omits the rest, and we drop it even
+        # if a publisher sends it anyway. Forwarding a leftover distance next to
+        # "no person" is exactly the frozen-value-that-looks-live failure the
+        # dashboard exists to avoid.
+        return out
+
+    if topic == "robot_state":
+        st = str(d.get("state", "")).strip().lower()
+        # An unknown state is surfaced as "unknown" rather than mapped onto a
+        # neighbour: the progress strip lighting up "approach" because someone
+        # added a state we do not know about would be an outright lie.
+        out["state"] = st if st in DEMO_STATES else "unknown"
+        out["raw_state"] = st
+        mode = _num(d.get("mode"))
+        out["mode"] = None if mode is None else int(mode)
+        cmd = d.get("cmd") if isinstance(d.get("cmd"), dict) else {}
+        out["cmd"] = {k: _num(cmd.get(k), 0.0) for k in ("vx", "vy", "wz")}
+        out["target_bearing_deg"] = _num(d.get("target_bearing_deg"))
+        out["distance_m"] = _num(d.get("distance_m"))
+        return out
+
+    return None
+
+
+# ---------------------------------------------------------------------------
 # ROS node: subscribe to the pipeline, summarize, and push to the web layer.
 # ---------------------------------------------------------------------------
 class WebMod(Node):
@@ -186,6 +310,21 @@ class WebMod(Node):
         self.declare_parameter("partial_topic", "/dorai_partial_transcript")
         self.declare_parameter("diag_topic", "/voice_mod/diagnostics")
         self.declare_parameter("levels_topic", "/voice_mod/levels")
+
+        # Demo-bridge topics (DEMO_INTERFACES.md). Names are parameters so the
+        # dashboard can be pointed at a mock publisher (mock_demo.py) without a
+        # rebuild — that is how these panels were developed while doa_mod,
+        # wake_mod and the ROS 1 side were still being written.
+        self.declare_parameter("doa_topic", "/dorai/doa")
+        self.declare_parameter("wake_topic", "/dorai/wake")
+        self.declare_parameter("person_topic", "/dorai/person")
+        self.declare_parameter("robot_state_topic", "/dorai/robot_state")
+        # Camera passthrough is OPT-IN: empty means the panel never appears.
+        # The detector image lives on the ROS 1 side and only reaches ROS 2 if
+        # somebody republishes it, so defaulting this on would give every demo a
+        # permanently-dead black rectangle. See on_camera().
+        self.declare_parameter("camera_topic", "")
+        self.declare_parameter("camera_max_hz", 4.0)
 
         gp = self.get_parameter
         self.create_subscription(
@@ -202,6 +341,33 @@ class WebMod(Node):
             String, gp("diag_topic").value, self.on_diag, 10)
         self.create_subscription(
             Float32MultiArray, gp("levels_topic").value, self.on_levels, 10)
+
+        # Each demo topic gets its own tiny closure rather than four near-copies
+        # of the same parse-and-forward body.
+        for kind, param in (("doa", "doa_topic"), ("wake", "wake_topic"),
+                            ("person", "person_topic"),
+                            ("robot_state", "robot_state_topic")):
+            self.create_subscription(
+                String, gp(param).value,
+                (lambda msg, k=kind: self.on_demo(k, msg)), 10)
+
+        self._cam_min_dt = 1.0 / max(0.5, float(gp("camera_max_hz").value))
+        self._cam_last = 0.0
+        self._cam_warned = False
+        cam_topic = str(gp("camera_topic").value or "").strip()
+        if cam_topic:
+            # Imported lazily and defensively: sensor_msgs is present in the
+            # dorai image, but the dashboard must still come up on a box where
+            # it is not, because losing the transcript to a missing camera
+            # dependency would be an absurd way to lose a demo.
+            try:
+                from sensor_msgs.msg import CompressedImage
+                self.create_subscription(
+                    CompressedImage, cam_topic, self.on_camera, 1)
+                hub.ui_config["camera"] = True
+                self.get_logger().info(f"camera passthrough from {cam_topic}")
+            except Exception as e:
+                self.get_logger().warn(f"camera topic disabled: {e}")
 
         self.get_logger().info("web_mod subscribed; dashboard bridge ready.")
 
@@ -268,6 +434,52 @@ class WebMod(Node):
         levels = list(np.asarray(msg.data, dtype=np.float32))
         self.hub.broadcast({"type": "levels", "rms": [round(float(v), 6) for v in levels]})
 
+    # ---- demo bridge -------------------------------------------------------
+    # Deliberately NOT gated on hub.frozen. Freeze latches the audio window so
+    # the operator can replay and save it; the robot keeps moving and the
+    # audience keeps watching, so the DOA dial and the state strip must keep
+    # running. (on_diag makes the same call for the same reason.)
+    def on_demo(self, kind, msg):
+        try:
+            d = json.loads(msg.data)
+        except Exception:
+            # Contract: "a receiver that cannot parse a datagram drops it and
+            # keeps running". Not even a log line — a publisher stuck emitting
+            # garbage at 10 Hz would otherwise drown the container log and take
+            # the useful messages with it.
+            return
+        payload = sanitize_demo(kind, d)
+        if payload is not None:
+            self.hub.push_demo(kind, payload)
+
+    def on_camera(self, msg):
+        """Forward the detector passthrough JPEG, throttled.
+
+        Kept crude on purpose: no decode, no re-encode, no drawing. The bytes go
+        straight to the browser as base64 and the <img> tag does the work, so a
+        camera frame costs this node a memcpy rather than an OpenCV round-trip
+        it would have to do 30 times a second while the beamformer needs the
+        CPU. The QoS depth is 1 and the throttle is wall-clock, so a backlog is
+        dropped rather than queued: an image that is two seconds late is worth
+        nothing on a dashboard."""
+        now = time.monotonic()
+        if now - self._cam_last < self._cam_min_dt:
+            return
+        data = bytes(msg.data)
+        if not data or len(data) > CAMERA_MAX_BYTES:
+            if not self._cam_warned:
+                self._cam_warned = True
+                self.get_logger().warn(
+                    f"camera frame of {len(data)} B skipped (cap "
+                    f"{CAMERA_MAX_BYTES} B); lower the resolution to use it")
+            return
+        self._cam_last = now
+        fmt = "jpeg" if "jpeg" in str(msg.format).lower() or "jpg" in str(msg.format).lower() else "png"
+        self.hub.push_demo("camera", {
+            "fmt": fmt,
+            "b64": base64.b64encode(data).decode("ascii"),
+        })
+
 
 # ---------------------------------------------------------------------------
 # Hub: the thread-safe bridge between the ROS thread and the asyncio server.
@@ -292,6 +504,46 @@ class Hub:
         self._frozen_clean = np.zeros(0, dtype=np.float32)
         self._frozen_raw_down = np.zeros(0, dtype=np.float32)
         self._frozen_raw = []
+
+        # Last message seen on each demo-bridge topic, with the monotonic time
+        # it arrived. Replayed to a browser the moment it connects: without it,
+        # an F5 in the middle of the demo leaves the DOA dial and the state
+        # strip blank until the next message — which for robot_state at 5 Hz is
+        # fine, but for `wake` (event-driven, maybe once in the whole demo)
+        # would silently lose the marker that the demo ever started.
+        self._demo_lock = threading.Lock()
+        self._demo_last = {}
+        # Handed to every client on connect: things the UI cannot know by
+        # itself and must not guess. See the mic_forward_deg discussion in main().
+        self.ui_config = {"camera": False, "mic_forward_deg": 0.0,
+                          "camera_hfov_deg": 69.0}
+
+    # ---- demo bridge snapshots --------------------------------------------
+    def push_demo(self, kind, payload):
+        """Record + fan out one sanitized demo message."""
+        payload = dict(payload)
+        payload["type"] = kind
+        with self._demo_lock:
+            self._demo_last[kind] = (time.monotonic(), payload)
+        self.broadcast(payload)
+
+    def demo_snapshot(self):
+        """The last message per demo topic, each tagged with its age in seconds.
+
+        `age` exists so a late-joining browser starts out honest: it rewinds its
+        own arrival clock by that much, so a topic that died thirty seconds ago
+        shows up as SILENT immediately instead of looking freshly live for one
+        staleness timeout. This is the client-side half of the arrival-clock
+        rule described above sanitize_demo()."""
+        now = time.monotonic()
+        with self._demo_lock:
+            items = list(self._demo_last.items())
+        out = []
+        for _kind, (rx, payload) in items:
+            snap = dict(payload)
+            snap["age"] = round(now - rx, 3)
+            out.append(snap)
+        return out
 
     # ---- rolling windows (appended by ROS thread while live) ---------------
     def append_raw_live(self, x):
@@ -546,8 +798,13 @@ def make_app(hub, static_dir):
 
         send_task = asyncio.ensure_future(sender())
         # Tell the freshly-connected client the current pipeline state so its
-        # Start/Stop buttons render correctly.
+        # Start/Stop buttons render correctly, then the demo-topic config and
+        # whatever the demo topics last said (each with its age, so a reload
+        # mid-demo does not invent freshness).
         await ws.send_str(json.dumps({"type": "state", "frozen": hub.frozen}))
+        await ws.send_str(json.dumps(dict(hub.ui_config, type="config")))
+        for snap in hub.demo_snapshot():
+            await ws.send_str(json.dumps(snap))
         try:
             async for m in ws:
                 if m.type != WSMsgType.TEXT:
@@ -610,12 +867,30 @@ def main(args=None):
     boot.declare_parameter("host", "0.0.0.0")
     boot.declare_parameter("port", 8080)
     boot.declare_parameter("play_device", "")     # sounddevice name substring
+    # Where the microphone board's 0 degrees sits relative to the robot's nose.
+    #
+    # DEMO_INTERFACES.md pins /dorai/doa to "counter-clockwise from the
+    # ReSpeaker MIC1 reference" and stops there — the mounting angle of the
+    # board on Artaban is not in the contract, and nothing publishes it. The
+    # dial therefore draws robot-forward at the top and rotates the acoustic
+    # bearing by this parameter to get there. Leave it at 0 and the dial's top
+    # is the MIC1 reference (and says so, in the caption, rather than quietly
+    # implying it is the robot's nose). Measure the board once, set the number,
+    # and the caption switches to the robot frame.
+    boot.declare_parameter("mic_forward_deg", 0.0)
+    # Horizontal field of view of the passthrough camera, used only to place the
+    # person marker on the image. 69 deg is the OAK-D colour sensor.
+    boot.declare_parameter("camera_hfov_deg", 69.0)
     host = boot.get_parameter("host").value
     port = int(boot.get_parameter("port").value)
     play_device = str(boot.get_parameter("play_device").value or "").strip() or None
+    mic_forward = float(boot.get_parameter("mic_forward_deg").value)
+    cam_hfov = float(boot.get_parameter("camera_hfov_deg").value)
     boot.destroy_node()
 
     hub = Hub(play_device=play_device)
+    hub.ui_config["mic_forward_deg"] = mic_forward
+    hub.ui_config["camera_hfov_deg"] = cam_hfov
     node = WebMod(hub)
     hub.logger = node.get_logger()
 

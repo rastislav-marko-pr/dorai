@@ -8,6 +8,7 @@
   :root{
     --bg:#0d1117; --panel:#161b22; --edge:#232c38; --ink:#e6edf3;
     --dim:#8b949e; --accent:#4dd0e1; --clean:#7ee787; --raw:#ff9e64;
+    --wake:#ffd166; --bad:#f85149;
   }
   *{box-sizing:border-box}
   body{margin:0;background:var(--bg);color:var(--ink);
@@ -69,6 +70,75 @@
   .badge.live{color:#0d1117;background:var(--clean)}
   .badge.froz{color:#0d1117;background:var(--raw)}
   .ba.frozen{outline:2px dashed var(--raw);outline-offset:6px;border-radius:8px}
+
+  /* ---- demo panels: direction of arrival + person/robot state -----------
+     Sized for a projector at the back of a room: the numbers that carry the
+     demo are 30-44 px, every label is >=12 px at weight 600, and nothing that
+     matters is drawn in the --dim grey (that is reserved for captions). */
+  .duo{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:16px}
+  @media(max-width:980px){.duo{grid-template-columns:1fr}}
+  /* One freshness badge per TOPIC, not per panel: /dorai/person and
+     /dorai/robot_state come from different ROS 1 nodes and die independently,
+     and a single badge would let one cover for the other. */
+  .fresh{font-size:12px;font-weight:700;letter-spacing:.5px;padding:3px 9px;border-radius:999px;
+    border:1px solid var(--edge);color:var(--ink);background:#0d1117;white-space:nowrap}
+  .fresh.ok{color:#0d1117;background:var(--clean);border-color:var(--clean)}
+  .fresh.stale{color:#0d1117;background:var(--raw);border-color:var(--raw)}
+  .fresh.gone{color:#fff;background:#8c1d18;border-color:var(--bad)}
+  .doawrap{display:grid;grid-template-columns:minmax(0,46%) minmax(0,1fr);gap:16px;align-items:center}
+  @media(max-width:560px){.doawrap{grid-template-columns:1fr}}
+  canvas#doaDial{width:100%;aspect-ratio:1/1;display:block;background:#05070a;border-radius:10px}
+  .big{font-size:42px;line-height:1.05;font-weight:700;font-variant-numeric:tabular-nums}
+  .big.sm{font-size:30px}
+  .big.off{color:#6e7681}          /* blanked, not held: no value is being shown */
+  .fail{font-size:19px;font-weight:700;line-height:1.3;color:var(--raw)}
+  .fail.wait{color:var(--dim)}   /* never arrived != died: only one is alarming */
+  .lab{font-size:12px;font-weight:600;letter-spacing:.5px;text-transform:uppercase;
+    color:var(--dim);margin-top:3px}
+  .cbar{height:14px;margin:4px 0 2px}
+  .cbar>i{background:linear-gradient(90deg,#1f6f5c,var(--accent) 60%,var(--clean));transition:width .15s linear}
+  .why{font-size:13px;font-weight:600;color:var(--ink)}
+  .why.warn{color:var(--raw)} .why.bad{color:var(--bad)}
+  .wake{display:flex;gap:10px;align-items:baseline;margin-top:14px;padding:8px 11px;border-radius:8px;
+    background:#2b2410;border:1px solid #6b5a17;color:var(--wake);font-weight:700;font-size:13px}
+  .wake.idle{background:#05070a;border-color:var(--edge);color:#6e7681}
+  .wake b{font-size:19px;letter-spacing:.4px}
+  .wake span.ago{margin-left:auto;font-weight:600;color:var(--dim)}
+  /* behaviour progress strip */
+  .strip{display:flex;gap:6px;margin:2px 0 12px}
+  .step{flex:1 1 0;min-width:0;text-align:center;font-size:14px;font-weight:700;letter-spacing:.6px;
+    padding:11px 2px;border-radius:8px;background:#05070a;border:1px solid var(--edge);color:#6e7681}
+  .step.done{color:var(--clean);border-color:#2b4b36}
+  .step.on{color:#0d1117;background:var(--accent);border-color:var(--accent);
+    box-shadow:0 0 16px rgba(77,208,225,.5)}
+  .step.halt{color:#fff;background:#8c1d18;border-color:var(--bad);box-shadow:0 0 16px rgba(248,81,73,.5)}
+  .strip.dim .step{opacity:.3;box-shadow:none}
+  .kv{font:12px/1.7 ui-monospace,Menlo,monospace;color:var(--ink);background:#05070a;
+    border-radius:6px;padding:8px 10px}
+  .kv b{color:var(--accent);font-weight:600}
+  .nums{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px;margin:2px 0 12px}
+  @media(max-width:420px){.nums{grid-template-columns:1fr 1fr}}
+  /* front-arc strip: the person bearing lives in the ROBOT's frame, so it gets
+     its own left/right ruler and never touches the acoustic dial. */
+  .arc{position:relative;height:30px;background:#05070a;border:1px solid var(--edge);
+    border-radius:6px;overflow:hidden}
+  .arc .mid{position:absolute;left:50%;top:0;bottom:0;width:2px;background:#30363d}
+  .arc .mk{position:absolute;top:3px;bottom:3px;width:5px;border-radius:3px;background:var(--clean);
+    box-shadow:0 0 12px var(--clean);margin-left:-2px;transition:left .12s linear;display:none}
+  .arc .al,.arc .ar,.arc .ac{position:absolute;top:8px;font-size:11px;font-weight:600;color:var(--dim)}
+  .arc .al{left:8px} .arc .ar{right:8px} .arc .ac{left:50%;transform:translateX(-50%)}
+  .sub{margin:14px 0 8px;font-size:13px;font-weight:600;color:var(--dim);
+    text-transform:uppercase;letter-spacing:.6px;display:flex;align-items:center;
+    justify-content:space-between;gap:10px}
+  /* camera passthrough (optional; hidden unless the server says it has one) */
+  #camPanel{display:none}
+  .camwrap{position:relative;background:#05070a;border-radius:8px;overflow:hidden;
+    line-height:0;display:flex;justify-content:center}
+  .camwrap img{display:block;max-width:100%;max-height:420px}
+  /* Positioned from JS to the IMG's own box, not the wrapper's: the image is
+     centred and letterboxed, so a canvas stretched over the wrapper puts the
+     bearing bracket tens of pixels off to one side. */
+  #camOv{position:absolute;left:0;top:0}
 </style>
 </head>
 <body>
@@ -82,6 +152,65 @@
 </header>
 
 <main>
+  <!-- Direction of arrival + person/state. Added above the audio panels
+       because this is the pair the audience watches during the walk-to-me
+       demo; everything below is unchanged. -->
+  <section class="duo">
+    <section class="panel">
+      <h2 class="hrow">Direction of arrival
+        <span id="doaFresh" class="fresh">no data</span></h2>
+      <div class="doawrap">
+        <canvas id="doaDial"></canvas>
+        <div>
+          <div class="big off" id="doaBearing">– –</div>
+          <div class="lab" id="doaFrame">acoustic bearing</div>
+          <div class="lab" id="doaRel" style="color:var(--ink);font-size:13px">&nbsp;</div>
+          <div style="margin-top:12px">
+            <div class="lab">confidence <b id="doaConfTxt"
+              style="color:var(--ink);font-size:15px;margin-left:4px">–</b></div>
+            <div class="bar cbar"><i id="doaConfBar"></i></div>
+          </div>
+          <div class="why" id="doaWhy">waiting for /dorai/doa …</div>
+          <div class="wake idle" id="wakeBox">
+            <span>WAKE</span><b id="wakeTxt">— not yet —</b><span class="ago" id="wakeAgo"></span>
+          </div>
+        </div>
+      </div>
+      <p class="hint">The curve is the pooled SRP-PHAT power over 36 bins (10° each) — two
+        lobes mean two sound sources. Ticks around the rim are the last 12 s of accepted
+        bearings. The needle is drawn only while the message is both fresh and
+        <code>valid</code>; the wedge behind it widens as confidence falls.</p>
+    </section>
+
+    <section class="panel">
+      <h2 class="hrow">Robot behaviour
+        <span id="stFresh" class="fresh">no data</span></h2>
+      <div class="strip" id="stateStrip"></div>
+      <div class="kv" id="stKv">waiting for /dorai/robot_state …</div>
+      <div class="sub">Person <span id="pFresh" class="fresh">no data</span></div>
+      <div class="big off" id="pMsg">waiting for /dorai/person …</div>
+      <div class="nums">
+        <div><div class="big off" id="pDist">– –</div><div class="lab">distance</div></div>
+        <div><div class="big off" id="pBear">– –</div><div class="lab">bearing</div></div>
+        <div><div class="big sm off" id="pScore">–</div><div class="lab">score</div></div>
+      </div>
+      <div class="arc" id="pArc">
+        <div class="mid"></div><div class="mk" id="pMk"></div>
+        <div class="al">60° LEFT</div><div class="ac">FRONT</div><div class="ar">RIGHT 60°</div>
+      </div>
+      <p class="hint"><b style="color:var(--ink)">Different frames — do not compare the two
+        bearings.</b> This one is signed from the robot's own forward axis (+ is left);
+        the acoustic bearing on the left is measured from the microphone board's reference.</p>
+    </section>
+  </section>
+
+  <section class="panel" id="camPanel">
+    <h2 class="hrow">Detector view <span id="camFresh" class="fresh">no data</span></h2>
+    <div class="camwrap"><img id="camImg" alt="camera passthrough"><canvas id="camOv"></canvas></div>
+    <p class="hint">Passthrough frame from the depth camera. The bracket is drawn from the
+      person <em>bearing</em> and the camera's horizontal field of view — it is not the
+      detector's own bounding box, which the bridge contract does not carry.</p>
+  </section>
   <section class="panel">
     <h2>Live mic-array levels</h2>
     <div id="meters" class="meters"></div>
@@ -220,6 +349,388 @@ function setPartial(text){
   partialEl.textContent='… '+text; txBox.scrollTop=txBox.scrollHeight;
 }
 
+
+// ==========================================================================
+// Demo bridge: direction of arrival, person, robot behaviour state.
+// Fed by /dorai/doa, /dorai/wake, /dorai/person, /dorai/robot_state as defined
+// in DEMO_INTERFACES.md. The server sanitizes and forwards; every judgement
+// about whether a value can still be believed is made here.
+//
+// The rule that shapes all of it: at demo time any of these publishers may be
+// dead, and a dashboard that keeps showing the last good number is worse than
+// one showing nothing, because it sends the operator hunting for a fault in the
+// wrong subsystem. So every panel has three display states — live, stale,
+// silent — and stale/silent BLANK the numbers instead of holding them.
+// ==========================================================================
+const UI={camera:false, mic_forward_deg:0, camera_hfov_deg:69};
+
+// Arrival time (client clock, ms) of the last message per topic. Deliberately
+// NOT derived from the message `stamp`: person/robot_state are stamped on atb
+// by ROS 1, whose clock is not disciplined against this browser's, so stamp
+// arithmetic measures clock skew and calls it age. The server sends `age` with
+// its replayed snapshot on connect and we rewind by that much, so a reload in
+// the middle of the demo does not make a dead topic look freshly alive.
+const RX={};
+const DEMO={doa:null, wake:null, person:null, robot_state:null};
+// Nominal rates from the contract are doa/person 10 Hz, robot_state 5 Hz. The
+// thresholds are several periods, not one: DDS jitter and a busy beamformer
+// routinely cost a frame or two, and a badge that flickers amber is a badge
+// nobody reads.
+const FRESH_S={doa:1.5, person:1.5, robot_state:2.5, camera:2.0};
+const GONE_S ={doa:5.0, person:5.0, robot_state:8.0, camera:6.0};
+const TRAIL_MS=12000;      // how long an accepted bearing stays on the rim
+const WAKE_FADE_MS=25000;  // wake wedge dims to a ghost after this, never vanishes
+
+const TRAIL=[];            // {deg,t} — accepted (fresh AND valid) bearings only
+let lastValid=null;        // {deg,t} — for the honest "last valid 6 s ago" ghost
+
+function ageOf(k){ const t=RX[k]; return t===undefined ? null : (performance.now()-t)/1000; }
+// -1 nothing ever arrived, 0 fresh, 1 stale, 2 silent.
+function healthOf(k){ const a=ageOf(k);
+  if(a===null) return -1; if(a>GONE_S[k]) return 2; if(a>FRESH_S[k]) return 1; return 0; }
+function setFresh(el,k){
+  const h=healthOf(k), a=ageOf(k);
+  el.className='fresh'+(h===0?' ok':h===1?' stale':h===2?' gone':'');
+  el.textContent = h<0 ? 'no data' : h===0 ? 'live'
+    : (h===1?'stale ':'SILENT ')+(a<60?a.toFixed(1)+' s':Math.round(a/60)+' min');
+}
+function wrap180(d){ d=((d+180)%360+360)%360-180; return d; }
+function fmtDeg(d){ return Math.round(d)+'°'; }
+function sideText(rel){   // rel: +ve to the left, as the person message defines
+  const m=Math.abs(Math.round(rel));
+  if(m<=2) return 'dead ahead';
+  return m+'° '+(m>120?'behind-':'')+(rel>0?'left':'right');
+}
+
+// ---- the dial ------------------------------------------------------------
+// Robot-forward is fixed at the top so a viewer never has to think about
+// reference frames. mic_forward_deg (a node parameter) says which acoustic
+// bearing that top actually is; the caption below the number states the
+// assumption instead of hiding it, because DEMO_INTERFACES.md does not pin the
+// mounting angle of the mic board and nothing publishes it.
+function dialPoint(cx,cy,deg,rad){
+  // bearing_deg runs COUNTER-CLOCKWISE from the board's zero (contract), while
+  // canvas y grows downward. The textbook (sin,-cos) mapping therefore draws
+  // clockwise and mirrors the room left-for-right — which looks entirely
+  // plausible until someone walks to the robot's left and the needle swings
+  // right. Negating the angle is the whole fix; do not "simplify" it away.
+  const a=(deg-UI.mic_forward_deg)*Math.PI/180;
+  return [cx+rad*Math.sin(-a), cy-rad*Math.cos(-a)];
+}
+function dialLine(g,cx,cy,deg,r0,r1,col,w){
+  const [x0,y0]=dialPoint(cx,cy,deg,r0), [x1,y1]=dialPoint(cx,cy,deg,r1);
+  g.strokeStyle=col; g.lineWidth=w; g.beginPath(); g.moveTo(x0,y0); g.lineTo(x1,y1); g.stroke();
+}
+function dialWedge(g,cx,cy,deg,half,r0,r1,fill){
+  g.beginPath();
+  for(let d=-half; d<=half; d+=2){ const [x,y]=dialPoint(cx,cy,deg+d,r1); g.lineTo(x,y); }
+  for(let d=half; d>=-half; d-=2){ const [x,y]=dialPoint(cx,cy,deg+d,r0); g.lineTo(x,y); }
+  g.closePath(); g.fillStyle=fill; g.fill();
+}
+function drawDial(){
+  const cvs=document.getElementById('doaDial');
+  const r=cvs.getBoundingClientRect();
+  const W=Math.max(140,Math.round(r.width)), H=Math.max(140,Math.round(r.height||r.width));
+  // Back the canvas with device pixels. Unlike the spectrograms (pixel art that
+  // is meant to look blocky) this dial is line art and text, and on a HiDPI
+  // laptop driving a projector a 1x backing store turns the tick labels to mush.
+  const dpr=window.devicePixelRatio||1;
+  if(cvs.width!==Math.round(W*dpr)||cvs.height!==Math.round(H*dpr)){
+    cvs.width=Math.round(W*dpr); cvs.height=Math.round(H*dpr); }
+  const g=cvs.getContext('2d'); g.setTransform(dpr,0,0,dpr,0,0); g.clearRect(0,0,W,H);
+  const cx=W/2, cy=H/2, R=Math.min(W,H)/2-18, R0=R*0.16;
+  const now=performance.now(), h=healthOf('doa'), d=DEMO.doa;
+  // "Trust" is the single gate on drawing a needle: the message must be fresh
+  // AND carry valid:true AND actually contain a bearing. Anything less and the
+  // needle is simply absent — never parked at the last plausible angle.
+  const trust = h===0 && d && d.valid && d.bearing_deg!=null;
+
+  // rim + 30° ticks
+  g.strokeStyle='#30363d'; g.lineWidth=1.5;
+  g.beginPath(); g.arc(cx,cy,R,0,6.2832); g.stroke();
+  g.beginPath(); g.arc(cx,cy,R*0.62,0,6.2832); g.strokeStyle='#1d242e'; g.stroke();
+  for(let a=0;a<360;a+=30){
+    const major=(a%90===0);
+    dialLine(g,cx,cy,a+UI.mic_forward_deg,R-(major?11:6),R,major?'#5a6472':'#2c333d',major?2:1.5);
+  }
+  g.fillStyle='#8b949e'; g.font='600 11px system-ui,sans-serif'; g.textAlign='center';
+  for(const a of [0,90,180,270]){                 // labels in the acoustic frame
+    const [x,y]=dialPoint(cx,cy,a+UI.mic_forward_deg,R-24);
+    g.fillText(a+'°',x,y+4);
+  }
+  g.fillStyle='#e6edf3'; g.font='700 11px system-ui,sans-serif';
+  g.fillText('▲ FRONT', cx, 13);
+
+  // SRP-PHAT curve behind everything. Re-normalised locally: the contract says
+  // it arrives peak-normalised to 1, but a publisher shipping raw power would
+  // otherwise draw a flat line at the rim or a dot at the centre, and a flat
+  // line looks like "no sources" rather than "wrong units".
+  if(d && d.spectrum && d.spectrum.length>1 && h<2){
+    const sp=d.spectrum, n=sp.length; let mx=0; for(let i=0;i<n;i++) if(sp[i]>mx) mx=sp[i];
+    if(mx>0){
+      g.beginPath();
+      for(let i=0;i<=n;i++){
+        const v=Math.max(0,Math.min(1,sp[i%n]/mx));
+        const [x,y]=dialPoint(cx,cy,(i%n)*360/n, R0+(R-R0)*v);
+        if(i) g.lineTo(x,y); else g.moveTo(x,y);
+      }
+      g.closePath();
+      // Brightness tracks trust: a full-strength curve next to a "low
+      // confidence" caption would still read as certainty from ten metres away.
+      const k = trust ? 1 : (h===0 ? 0.5 : 0.25);
+      g.fillStyle   = 'rgba(77,208,225,'+(0.20*k).toFixed(3)+')';
+      g.strokeStyle = 'rgba(77,208,225,'+(0.35+0.6*k).toFixed(3)+')';
+      g.fill(); g.lineWidth=2; g.stroke();
+    }
+  }
+
+  // trail of accepted bearings, oldest fading out
+  while(TRAIL.length && now-TRAIL[0].t>TRAIL_MS) TRAIL.shift();
+  for(let i=0;i<TRAIL.length;i++){
+    const p=TRAIL[i], k=1-(now-p.t)/TRAIL_MS;
+    dialLine(g,cx,cy,p.deg,R-9,R+3,'rgba(126,231,135,'+(0.12+0.75*k).toFixed(3)+')',
+             i===TRAIL.length-1?3:2);
+  }
+
+  // wake-word marker: where the demo actually started
+  const wk=DEMO.wake;
+  if(wk && wk.bearing_deg!=null && wk.confidence>0.01){
+    const age=(now-(RX.wake||now))/1000;
+    const k=Math.max(0.35, 1-age*1000/WAKE_FADE_MS);
+    dialWedge(g,cx,cy,wk.bearing_deg,5,R0,R,'rgba(255,209,102,'+(0.10+0.22*k).toFixed(3)+')');
+    dialLine(g,cx,cy,wk.bearing_deg,R0,R,'rgba(255,209,102,'+(0.35+0.6*k).toFixed(3)+')',2);
+    const [x,y]=dialPoint(cx,cy,wk.bearing_deg,R+1);
+    g.fillStyle='rgba(255,209,102,'+(0.5+0.5*k).toFixed(3)+')';
+    g.beginPath(); g.arc(x,y,4.5,0,6.2832); g.fill();
+  }
+
+  if(trust){
+    // Uncertainty wedge: half-angle grows as confidence falls, so a 0.2
+    // confidence bearing reads as a fan rather than as a laser pointer.
+    const half=5+(1-d.confidence)*40;
+    dialWedge(g,cx,cy,d.bearing_deg,half,R0,R,'rgba(126,231,135,.13)');
+    const col=d.confidence>=0.5?'#7ee787':'#ff9e64';
+    dialLine(g,cx,cy,d.bearing_deg,R0*0.4,R-2,col,4);
+    const [x,y]=dialPoint(cx,cy,d.bearing_deg,R-2);
+    g.fillStyle=col; g.beginPath(); g.arc(x,y,6,0,6.2832); g.fill();
+  } else if(lastValid && now-lastValid.t<TRAIL_MS && h<2){
+    // h<2: once the topic is SILENT the panel says so in 15 px letters, and a
+    // ghost of a bearing from before the failure is clutter, not information.
+    // No trustworthy bearing right now. Show the last one as an explicit ghost
+    // with its age attached — never as a live needle.
+    g.setLineDash([4,5]);
+    dialLine(g,cx,cy,lastValid.deg,R*0.55,R-4,'rgba(255,158,100,.55)',2);
+    g.setLineDash([]);
+    const [x,y]=dialPoint(cx,cy,lastValid.deg,R*0.40);
+    g.fillStyle='#ff9e64'; g.font='600 10px system-ui,sans-serif';
+    g.fillText(((now-lastValid.t)/1000).toFixed(1)+' s ago',x,y);
+  }
+  g.fillStyle=trust?'#e6edf3':'#484f58';
+  g.beginPath(); g.arc(cx,cy,4,0,6.2832); g.fill();
+
+  if(h!==0){   // a dead or stalling topic must be unmissable, not subtle
+    g.fillStyle='rgba(13,17,23,.72)'; g.fillRect(0,cy-19,W,38);
+    g.fillStyle=h===2?'#f85149':'#ff9e64'; g.font='700 15px system-ui,sans-serif';
+    g.fillText(h<0?'NO DOA DATA':h===2?'DOA SILENT':'DOA STALE', cx, cy+5);
+  }
+}
+
+// ---- numeric side of the DOA panel ---------------------------------------
+function renderDoa(){
+  const h=healthOf('doa'), d=DEMO.doa;
+  setFresh(document.getElementById('doaFresh'),'doa');
+  const bEl=document.getElementById('doaBearing'), relEl=document.getElementById('doaRel');
+  const cTxt=document.getElementById('doaConfTxt'), cBar=document.getElementById('doaConfBar');
+  const why=document.getElementById('doaWhy');
+  const trust = h===0 && d && d.valid && d.bearing_deg!=null;
+  if(trust){
+    bEl.textContent=fmtDeg(((d.bearing_deg%360)+360)%360);
+    bEl.className='big';
+    // Counter-clockwise from the dial top means to the robot's LEFT, and the
+    // canvas already draws it that way. Do not "correct" this sign to match the
+    // person bearing's convention — they are different quantities.
+    relEl.textContent=sideText(wrap180(d.bearing_deg-UI.mic_forward_deg))+' of the dial top';
+  }else{
+    bEl.textContent='– –'; bEl.className='big off'; relEl.innerHTML='&nbsp;';
+  }
+  // Confidence is shown whenever a message is fresh, valid or not: the contract
+  // still populates it when valid is false, and "0.11, unreliable" is a more
+  // useful thing to put in front of an operator than a blank.
+  if(h===0 && d){
+    cTxt.textContent=d.confidence.toFixed(2);
+    cBar.style.width=Math.round(d.confidence*100)+'%';
+    cBar.style.background=d.valid?'':'linear-gradient(90deg,#7a4a17,#ff9e64)';
+  }else{ cTxt.textContent='–'; cBar.style.width='0%'; }
+  why.className='why'+(h===0&&d&&d.valid?'':(h===2||h<0?' bad':' warn'));
+  if(h<0)       why.textContent='waiting for /dorai/doa …';
+  else if(h===2)why.textContent='/dorai/doa silent — doa_mod is not publishing';
+  else if(h===1)why.textContent='/dorai/doa late — last message '+ageOf('doa').toFixed(1)+' s ago';
+  else if(!d.valid) why.textContent='LOW CONFIDENCE — no speech, or the TDOA closure check failed';
+  else          why.textContent='speech localised · '+(d.spectrum?d.spectrum.length+'-bin spectrum':'no spectrum in message');
+
+  const wb=document.getElementById('wakeBox'), wt=document.getElementById('wakeTxt'),
+        wa=document.getElementById('wakeAgo'), wk=DEMO.wake;
+  if(wk){
+    wb.className='wake';
+    const known = wk.bearing_deg!=null && wk.confidence>0.01;
+    wt.textContent='“'+(wk.keyword||'?')+'” '+(known?'at '+fmtDeg(wk.bearing_deg):'· bearing unknown');
+    wa.textContent=ageOf('wake').toFixed(0)+' s ago';
+  }else{ wb.className='wake idle'; wt.textContent='— not yet —'; wa.textContent=''; }
+}
+
+// ---- person + robot behaviour --------------------------------------------
+const STEPS=['idle','turn','acquire','approach'];
+function buildStrip(){
+  const box=document.getElementById('stateStrip');
+  box.innerHTML=STEPS.map(s=>'<span class="step" data-s="'+s+'">'+s.toUpperCase()+'</span>').join('')
+    +'<span class="step" data-s="stopped" id="stepStop" style="display:none">STOPPED</span>';
+}
+function renderState(){
+  const h=healthOf('robot_state'), st=DEMO.robot_state;
+  setFresh(document.getElementById('stFresh'),'robot_state');
+  const strip=document.getElementById('stateStrip'), kv=document.getElementById('stKv');
+  // A stale strip is dimmed AND stripped of its highlight. Leaving "APPROACH"
+  // lit while the behaviour node is dead is the exact lie this panel exists to
+  // avoid — the audience would watch a stationary robot under a live-looking
+  // label and conclude the walk failed rather than the link.
+  strip.classList.toggle('dim', h!==0);
+  const cur = h===0 && st ? st.state : null;
+  const idx = STEPS.indexOf(cur);
+  strip.querySelectorAll('.step').forEach(el=>{
+    const s=el.dataset.s, i=STEPS.indexOf(s);
+    el.className='step'+(cur===null?'':(s===cur?(s==='stopped'?' halt':' on'):(idx>=0&&i>=0&&i<idx?' done':'')));
+  });
+  const stop=document.getElementById('stepStop');
+  stop.style.display=(cur==='stopped'||cur==='unknown')?'':'none';
+  if(cur==='unknown'){ stop.textContent='UNKNOWN: '+(st.raw_state||'?'); stop.className='step halt'; }
+  else stop.textContent='STOPPED';
+
+  if(h<0){ kv.style.opacity='1'; kv.textContent='waiting for /dorai/robot_state …'; return; }
+  if(h===2){ kv.style.opacity='1'; kv.innerHTML='<b style="color:var(--bad)">/dorai/robot_state silent</b> — '+
+    'behaviour_node or the UDP bridge is down. Values withheld.'; return; }
+  // Stale values are kept (an operator still wants the last command) but
+  // visibly demoted, so nobody reads them as what the robot is doing now.
+  kv.style.opacity = h===1 ? '0.55' : '1';
+  const c=st.cmd||{vx:0,vy:0,wz:0};
+  const tb=st.target_bearing_deg, dm=st.distance_m;
+  kv.innerHTML=
+    'mode <b>'+(st.mode===null?'–':st.mode)+'</b>   '+
+    'cmd vx <b>'+c.vx.toFixed(2)+'</b> vy <b>'+c.vy.toFixed(2)+'</b> wz <b>'+c.wz.toFixed(2)+'</b><br>'+
+    'target bearing <b>'+(tb==null?'–':fmtDeg(tb))+'</b>   '+
+    'target range <b>'+(dm==null?'–':dm.toFixed(2)+' m')+'</b>'+
+    (h===1?'   <span style="color:var(--raw)">(stale '+ageOf('robot_state').toFixed(1)+' s)</span>':'');
+}
+function renderPerson(){
+  const h=healthOf('person'), p=DEMO.person;
+  setFresh(document.getElementById('pFresh'),'person');
+  const dEl=document.getElementById('pDist'), bEl=document.getElementById('pBear'),
+        sEl=document.getElementById('pScore'), mk=document.getElementById('pMk'),
+        msg=document.getElementById('pMsg');
+  const live = h===0 && p && p.present;
+  msg.style.display=live?'none':'';
+  document.querySelector('.nums').style.display=live?'':'none';
+  if(live){
+    dEl.textContent=(p.distance_m==null?'–':p.distance_m.toFixed(2))+' m'; dEl.className='big';
+    const b=p.bearing_deg;
+    bEl.textContent = b==null ? '– –' : Math.abs(Math.round(b))+'° '+(Math.abs(b)<=2?'':(b>0?'L':'R'));
+    bEl.className='big';
+    sEl.textContent=(p.score||0).toFixed(2); sEl.className='big sm';
+    // + is LEFT of the robot's nose, and the robot's left is the left-hand side
+    // of a forward-facing camera view, so a positive bearing plots left of
+    // centre. Clamped to the ±60° ruler rather than allowed to run off-panel.
+    if(b==null){ mk.style.display='none'; }
+    else{ mk.style.display=''; mk.style.left=(50-Math.max(-60,Math.min(60,b))/60*50)+'%'; }
+  }else{
+    // Nothing is half-shown. Either three live numbers, or one sentence saying
+    // why there are none — a blanked "3.42 m" that is really four seconds old
+    // is the failure mode this whole panel is built to prevent.
+    mk.style.display='none';
+    // "NO PERSON" is a demo fact and gets the full 42 px; a topic failure is an
+    // operator fact and gets a readable sentence instead of a shouting fragment.
+    msg.className = h===0 ? 'big off' : (h<0 ? 'fail wait' : 'fail');
+    msg.textContent = h<0 ? 'waiting for /dorai/person …'
+      : h===2 ? '/dorai/person SILENT — person_node or the bridge is down'
+      : h===1 ? '/dorai/person stale ('+ageOf('person').toFixed(1)+' s)'
+      : 'NO PERSON';
+  }
+}
+
+// ---- optional camera passthrough -----------------------------------------
+function renderCam(){
+  if(!UI.camera) return;
+  setFresh(document.getElementById('camFresh'),'camera');
+  const cvs=document.getElementById('camOv'), img=document.getElementById('camImg');
+  const w=img.offsetWidth, h=img.offsetHeight; if(!w||!h) return;
+  const r={width:w, height:h};
+  // Follow the image's own box every frame — it moves when the panel is
+  // resized and when a frame of a different aspect ratio arrives.
+  cvs.style.left=img.offsetLeft+'px'; cvs.style.top=img.offsetTop+'px';
+  cvs.style.width=w+'px'; cvs.style.height=h+'px';
+  const dpr=window.devicePixelRatio||1;
+  if(cvs.width!==Math.round(w*dpr)||cvs.height!==Math.round(h*dpr)){
+    cvs.width=Math.round(w*dpr); cvs.height=Math.round(h*dpr); }
+  const g=cvs.getContext('2d'); g.setTransform(dpr,0,0,dpr,0,0);
+  g.clearRect(0,0,r.width,r.height);
+  const p=DEMO.person;
+  if(healthOf('person')!==0||!p||!p.present||p.bearing_deg==null) return;
+  // Bearing -> pixel column through the camera's horizontal FOV. Positive
+  // bearing is to the robot's left, which is the left half of the image.
+  const x=r.width*(0.5 - p.bearing_deg/UI.camera_hfov_deg);
+  if(x<0||x>r.width) return;                     // outside the frame: draw nothing
+  const bw=Math.max(40,r.width*0.10), y0=r.height*0.12, y1=r.height*0.88;
+  g.strokeStyle='#7ee787'; g.lineWidth=3;
+  g.beginPath();
+  g.moveTo(x-bw/2,y0+18); g.lineTo(x-bw/2,y0); g.lineTo(x+bw/2,y0); g.lineTo(x+bw/2,y0+18);
+  g.moveTo(x-bw/2,y1-18); g.lineTo(x-bw/2,y1); g.lineTo(x+bw/2,y1); g.lineTo(x+bw/2,y1-18);
+  g.stroke();
+  g.fillStyle='#7ee787'; g.font='700 15px system-ui,sans-serif'; g.textAlign='center';
+  g.fillText((p.distance_m==null?'?':p.distance_m.toFixed(2)+' m'), x, y0-6);
+}
+
+// ---- message handling + repaint loop -------------------------------------
+function applyConfig(m){
+  UI.camera=!!m.camera;
+  UI.mic_forward_deg=+m.mic_forward_deg||0;
+  UI.camera_hfov_deg=+m.camera_hfov_deg||69;
+  // display:'' CLEARS the inline style, which hands the element straight back
+  // to the stylesheet's `#camPanel{display:none}` — the panel stayed invisible
+  // with a live image inside it until this was spelled out as 'block'.
+  document.getElementById('camPanel').style.display=UI.camera?'block':'none';
+  // Say which frame the dial's top really is instead of quietly implying it is
+  // the robot's nose. With the offset at 0 the top IS the mic board's zero.
+  document.getElementById('doaFrame').textContent = UI.mic_forward_deg
+    ? 'acoustic · dial top = robot front (mic 0° at '+fmtDeg(UI.mic_forward_deg)+')'
+    : 'acoustic · dial top = mic board 0° (assumed robot front)';
+}
+function onDemo(m){
+  // `age` only ever arrives on the server's replay-on-connect snapshot; rewind
+  // the arrival clock by it so a reload cannot invent freshness.
+  RX[m.type]=performance.now()-(m.age||0)*1000;
+  if(m.type==='camera'){
+    document.getElementById('camImg').src='data:image/'+(m.fmt||'jpeg')+';base64,'+m.b64;
+    return;
+  }
+  DEMO[m.type]=m;
+  if(m.type==='doa' && m.valid && m.bearing_deg!=null){
+    const t=performance.now()-(m.age||0)*1000;
+    TRAIL.push({deg:m.bearing_deg,t}); if(TRAIL.length>240) TRAIL.shift();
+    lastValid={deg:m.bearing_deg,t};
+  }
+}
+// One repaint loop for all of it, capped at ~20 fps. It has to run on a timer
+// rather than on message arrival for the reason the panels exist: when a topic
+// goes silent there are no messages left to trigger a repaint, and the badges,
+// the fading trail and the "SILENT" overlay all have to appear anyway.
+// requestAnimationFrame (not setInterval) so a backgrounded tab costs nothing.
+let lastPaint=0;
+function tick(now){
+  requestAnimationFrame(tick);
+  if(now-lastPaint<50) return;
+  lastPaint=now;
+  drawDial(); renderDoa(); renderState(); renderPerson(); renderCam();
+}
+buildStrip(); requestAnimationFrame(tick);
+
 // ---- websocket -----------------------------------------------------------
 let ws;
 function connect(){
@@ -256,6 +767,11 @@ function connect(){
         if(m.status==='playing') startPlayhead(m.which,m.dur); else stopPlayhead();
         break;
       case 'ack': document.getElementById('ack').textContent=m.status; break;
+      case 'config': applyConfig(m); break;
+      // Demo-bridge topics: stored + timestamped here, drawn by the repaint
+      // loop above. Nothing is drawn on arrival — see the note on tick().
+      case 'doa': case 'wake': case 'person':
+      case 'robot_state': case 'camera': onDemo(m); break;
     }
   };
 }

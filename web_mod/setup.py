@@ -8,7 +8,9 @@ setup(
     # Flat layout: web.py is a top-level module. console_scripts below points
     # `ros2 run web_mod web` at web:main. The single-page dashboard ships as a
     # share data file and is located at runtime via the ament share dir.
-    py_modules=["web"],
+    # mock_demo is a testing tool (a fake demo bridge); it ships with the
+    # package so it can be run inside the container too.
+    py_modules=["web", "mock_demo"],
     data_files=[
         ("share/ament_index/resource_index/packages",
          ["resource/" + package_name]),
@@ -28,6 +30,7 @@ setup(
     entry_points={
         "console_scripts": [
             "web = web:main",
+            "mock_demo = mock_demo:main",
         ],
     },
 )
