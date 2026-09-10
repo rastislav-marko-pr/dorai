@@ -1,0 +1,78 @@
+<?xml version="1.0"?>
+<!--
+  Spatial YOLO person detection on the front OAK camera.
+
+  WHY THIS FILE EXISTS
+  pr_depthai_ros/launch/detection.launch does not work for this camera. It
+  applies its parameters under the /oak namespace while the camera runs as
+  /atb_front, and atb_front_rgbd.yaml pins camera_i_nn_type to "none". Nothing
+  in pr_depthai_ros or depthai-ros may be edited, so this file includes the
+  shipped oak.launch unmodified and overrides the parameters afterwards.
+
+  That works because roslaunch uploads every <param>/<rosparam> in the whole
+  launch tree to the parameter server BEFORE starting any node, and the last
+  definition of a name wins. The <include> is evaluated first, our overrides
+  land on top. Verified on atb: camera_i_nn_type reads back as "spatial".
+
+  THE 416 PREVIEW IS LOAD-BEARING. DO NOT "TIDY" IT AWAY.
+  The driver's colour preview defaults to 300x300. For YOLO, whose input is
+  416x416, it then inserts an ImageManip to rescale 300 -> 416, and the result
+  is that the network returns NOTHING AT ALL: zero detections on a scene full of
+  COCO objects, at every confidence threshold down to 0.1. MobileNet appears to
+  work only because its input is 300x300, so it never hits the rescale path.
+
+  Setting the preview to the network's native 416x416 and turning the rescale
+  off makes the colour camera feed the network directly, and detection starts
+  working immediately. Verified on atb, same scene, same blob:
+     300x300 preview + ImageManip  ->  nothing, ever
+     416x416 native preview        ->  pottedplant 0.64 at 0.95 m, correct side
+  A hand-built depthai pipeline with a native 416 preview also detects people at
+  0.99, which is what proves the blob was never the problem.
+
+  Model: YOLOv4-tiny COCO, person = class 0, blob from depthai_examples. NOT the
+  default MobileNet, which reports a full-frame "aeroplane" at 0.98 on an empty
+  scene. If you ever do switch back to MobileNet, person is class 15 there, so
+  set person_node's ~person_class_id to match or it will never see anybody.
+-->
+<launch>
+  <arg name="name" default="atb_front"/>
+
+  <!-- Feeds the network's input image out as a topic. Handy for seeing what the
+       detector actually sees; costs bandwidth. On for bring-up, off for a demo
+       where the camera is already sharing a USB bus. -->
+  <arg name="enable_passthrough" default="true"/>
+
+  <!-- Our own copy of the YOLO config. It differs from the shipped yolo.json in
+       exactly one way: confidence_threshold is also present at the top level of
+       nn_config, which is the ONLY place depthai_ros_driver reads it for YOLO.
+       The shipped file has it nested inside NN_specific_metadata, where
+       setYoloParams never looks, so editing the shipped value does nothing at
+       all and the network silently runs at the depthai default. -->
+  <arg name="nn_config_path" default="$(find dorai_demo)/config/yolov4_tiny_coco.json"/>
+
+  <!-- The network's input resolution. Preview size must equal this. -->
+  <arg name="nn_size" default="416"/>
+
+  <include file="$(find pr_depthai_ros)/launch/oak.launch">
+    <arg name="name" value="$(arg name)"/>
+    <arg name="mode" value="rgbd"/>
+  </include>
+
+  <!-- Overrides, applied after the include. Order matters, do not move these up. -->
+  <param name="$(arg name)/camera_i_nn_type"        value="spatial"/>
+  <param name="$(arg name)/camera_i_pipeline_type"  value="RGBD"/>
+  <param name="$(arg name)/rgb_i_enable_preview"    value="true"/>
+  <param name="$(arg name)/nn_i_enable_passthrough" value="$(arg enable_passthrough)"/>
+  <param name="$(arg name)/nn_i_nn_config_path"     value="$(arg nn_config_path)"/>
+
+  <!-- Feed the network at its native size. See the note above. -->
+  <param name="$(arg name)/rgb_i_preview_size"    value="$(arg nn_size)"/>
+  <param name="$(arg name)/rgb_i_preview_width"   value="$(arg nn_size)"/>
+  <param name="$(arg name)/rgb_i_preview_height"  value="$(arg nn_size)"/>
+  <param name="$(arg name)/nn_i_disable_resize"   value="true"/>
+  <!-- Squash the full 16:9 field of view into the square input rather than
+       centre-cropping it. Cropping would make a person standing off to one side
+       invisible to the detector even though the depth camera can see them.
+       Spatial x/y/z come from depth over the box, so bearing stays correct. -->
+  <param name="$(arg name)/rgb_i_keep_preview_aspect_ratio" value="false"/>
+</launch>

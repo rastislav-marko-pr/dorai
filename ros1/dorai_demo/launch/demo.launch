@@ -1,0 +1,107 @@
+<?xml version="1.0"?>
+<!--
+  DORAI demo bring-up, ROS 1 side.
+
+  Starts: the front camera with spatial YOLO person detection, person_node,
+  bridge_node and behaviour_node.
+
+  Deliberately NOT started here, because both are managed elsewhere and pulling
+  them into this file would make one launch responsible for things it cannot
+  safely own:
+    * the walking stack:
+        roslaunch quad_utils artaban.launch robot_type:=artaban_v03 \
+                  terrain_input_type:=sliding_grid
+    * the dorai container (ROS 2 audio side), via docker compose.
+
+  MOTION IS OFF BY DEFAULT. behaviour_node will run the full state machine and
+  report what it would do, but will not create the /robot_1/cmd_vel publisher
+  until someone passes enable_motion:=true. Read SAFETY_CHECKLIST.md before you
+  ever do that.
+-->
+<launch>
+  <arg name="camera_name"   default="atb_front"/>
+  <arg name="start_camera"  default="true"/>
+  <arg name="enable_motion" default="false"/>
+
+  <!-- Drive the turn on the yaw MEASURED on /robot_1/state/ground_truth rather
+       than on the yaw rate we commanded, and measure the blind leg of the
+       approach from the body position in the same message. Both are exposed as
+       arguments so that if the state estimator misbehaves mid-demo a human can
+       fall back to the old open-loop dead reckoning by relaunching with
+       use_yaw_feedback:=false, with no edit and no redeploy. -->
+  <arg name="use_yaw_feedback"  default="true"/>
+  <arg name="use_odom_distance" default="true"/>
+
+  <!-- Offset of the robot's forward axis in the ReSpeaker's 0..360 CCW frame.
+       MEASURED 2026-09-10: the board is mounted with its 0 pointing to the
+       robot's LEFT, so the robot's heading sits at 270 in board coordinates.
+       A wake at board 270 needs no turn; board 0, the robot's left, becomes
+       +90 once wrap180(bearing - 270) is applied. Re-measure if the board is
+       ever remounted, and re-measure after checking it is mechanically fixed:
+       the reported bearing for a fixed source has already drifted once. -->
+  <arg name="mic_forward_deg" default="270.0"/>
+
+  <include if="$(arg start_camera)"
+           file="$(find dorai_demo)/launch/detection_override.launch">
+    <arg name="name" value="$(arg camera_name)"/>
+  </include>
+
+  <node name="person_node" pkg="dorai_demo" type="person_node.py" output="screen">
+    <param name="detections_topic"
+           value="/$(arg camera_name)/nn/spatial_detections"/>
+    <!-- Class 0 is person for YOLOv4-tiny COCO. It is 15 for MobileNet-SSD,
+         so this must change with the model in detection_override.launch. -->
+    <param name="person_class_id" value="0"/>
+    <!-- The DISTANCE floor is what actually rejects the known false positive:
+         an empty bench read as a person 43% of the time, but always at 0.52 m,
+         so the 1.0 m floor below removes it outright. The score floor cannot do
+         that job, because the bench scored 0.50-0.73 and a real standing person
+         measured a MEDIAN of 0.52 on this camera - the ranges overlap almost
+         exactly. At 0.6 the floor was discarding 81% of genuine detections and
+         the dashboard read "no person" with somebody standing in front of it.
+         0.45 measured here; re-check on an empty scene if the camera moves. -->
+    <param name="min_score"       value="0.45"/>
+    <param name="min_distance_m"  value="1.0"/>
+    <param name="max_distance_m"  value="5.0"/>
+    <param name="hold_s"          value="0.6"/>
+  </node>
+
+  <node name="bridge_node" pkg="dorai_demo" type="bridge_node.py" output="screen">
+    <param name="rx_port" value="5801"/>
+    <param name="tx_port" value="5802"/>
+  </node>
+
+  <node name="behaviour_node" pkg="dorai_demo" type="behaviour_node.py" output="screen">
+    <param name="enable_motion"   value="$(arg enable_motion)"/>
+    <param name="mic_forward_deg" value="$(arg mic_forward_deg)"/>
+    <param name="use_yaw_feedback"  value="$(arg use_yaw_feedback)"/>
+    <param name="use_odom_distance" value="$(arg use_odom_distance)"/>
+    <!-- DEMO SPEEDS, set explicitly here rather than left to the code defaults
+         so that what the demo runs at is visible in one place.
+
+         The robot responds badly to small velocity commands: the local planner
+         steps only when the norm of the SCALED command exceeds
+         stand_cmd_vel_threshold 0.05, and it scales forward by 0.7 and yaw by
+         1.0, then low-pass filters with a 0.1 constant per message. At our
+         25 Hz that filter takes roughly a second to reach the commanded value,
+         so anything close to the threshold spends its whole life inside the
+         dead band. yaw_rate 0.4 arrives as 0.4 (8x the threshold) and
+         approach_speed 0.5 as 0.35 m/s (7x). The last hardware test was
+         deliberately slowed to 0.25 and 0.2 and was sluggish.
+
+         WARNING: roslaunch writes these to the parameter server and they SURVIVE
+         the node exiting. A leftover slow value from an earlier run silently
+         overrides the code defaults. Run `rosparam delete /behaviour_node`
+         before relying on a default you did not set here. -->
+    <param name="yaw_rate"        value="0.4"/>
+    <param name="approach_speed"  value="0.5"/>
+    <!-- The demo starts at 3 m and finishes at 0.7 m. Because the camera sits
+         low, a standing person leaves the TOP of the frame as the robot closes
+         in, so detection works far and fails near: reliable around 3 m, gone by
+         roughly 1.8 m. Losing the person on the way in is therefore the NORMAL
+         case, and the last ~1.1 m is walked on a remembered, averaged fix.
+         See the dead-reckoning block in behaviour_node.py for the bounds. -->
+    <param name="standoff_m"      value="0.7"/>
+    <param name="blind_approach"  value="true"/>
+  </node>
+</launch>
