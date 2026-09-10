@@ -9,3 +9,7 @@ __pycache__
 .dolt/
 *.db
 .beads-credential-key
+
+# vim swap files
+*.swp
+*.swo
