@@ -1,0 +1,28 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>bridge_mod</name>
+  <version>0.1.0</version>
+  <description>
+    dorai UDP bridge, ROS 2 half. Sends /dorai/doa and /dorai/wake as one-JSON-
+    object datagrams to 127.0.0.1:5801 and republishes person / robot_state
+    datagrams received on 127.0.0.1:5802 as ROS 2 std_msgs/String topics, per
+    DEMO_INTERFACES. Payloads pass through byte for byte. Rate-limited both
+    ways, and designed so that the ROS 1 half being absent or restarting is a
+    no-op rather than a fault.
+  </description>
+  <maintainer email="rastislav.marko@panzarobotics.com">Panza Robotics</maintainer>
+  <license>None</license>
+
+  <depend>rclpy</depend>
+  <depend>std_msgs</depend>
+
+  <test_depend>ament_copyright</test_depend>
+  <test_depend>ament_flake8</test_depend>
+  <test_depend>ament_pep257</test_depend>
+  <test_depend>python3-pytest</test_depend>
+
+  <export>
+    <build_type>ament_python</build_type>
+  </export>
+</package>

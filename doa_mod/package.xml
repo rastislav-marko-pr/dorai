@@ -1,0 +1,32 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>doa_mod</name>
+  <version>0.1.0</version>
+  <description>
+    dorai direction of arrival. Subscribes to voice_mod's raw multichannel tap
+    (the ReSpeaker's four capsules, one clock, 16 kHz), gates on a neural VAD,
+    and publishes the POOLED SRP-PHAT bearing on /dorai/doa as the
+    DEMO_INTERFACES JSON. The estimator (doa_core.py, vad.py, auto_calibrate.py)
+    is vendored byte-identical from updated_beamformer/doa/ and is not to be
+    rewritten; run tests/test_doa_core.py (21 tests) before trusting a number.
+  </description>
+  <maintainer email="rastislav.marko@panzarobotics.com">Panza Robotics</maintainer>
+  <license>None</license>
+
+  <depend>rclpy</depend>
+  <depend>std_msgs</depend>
+
+  <!-- onnxruntime (neural VAD) is pip-installed in the image; rosdep has no
+       key for it. numpy comes from apt so it matches the ROS base image. -->
+  <exec_depend>python3-numpy</exec_depend>
+
+  <test_depend>ament_copyright</test_depend>
+  <test_depend>ament_flake8</test_depend>
+  <test_depend>ament_pep257</test_depend>
+  <test_depend>python3-pytest</test_depend>
+
+  <export>
+    <build_type>ament_python</build_type>
+  </export>
+</package>

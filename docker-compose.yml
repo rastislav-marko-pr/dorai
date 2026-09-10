@@ -1,14 +1,25 @@
-# dorai pipeline — two ROS 2 nodes from one image.
+# dorai pipeline — every ROS 2 node from one image.
 #
-#   voice : mic-array capture + beamformer  -> /dorai_clean_audio
-#   stt   : subscribes to clean audio       -> /dorai_transcript
+#   voice  : ReSpeaker capture + beamformer  -> /dorai_clean_audio
+#   stt    : subscribes to clean audio       -> /dorai_transcript
+#   doa    : raw multichannel tap            -> /dorai/doa
+#   wake   : clean audio + doa ring          -> /dorai/wake
+#   bridge : doa + wake  <==UDP==>  ROS 1    -> /dorai/person, /dorai/robot_state
+#   web    : demo dashboard on :8080
 #
-# Both use host networking so ROS 2 DDS discovery works between them (and with
-# `ros2 topic echo` on the host) with zero extra config.
+# doa/wake/bridge implement the frozen DEMO_INTERFACES.md contract. Read it
+# before changing any topic name or payload here; two other workstreams are
+# coding against it.
+#
+# All of them use host networking so ROS 2 DDS discovery works between them
+# (and with `ros2 topic echo` on the host) with zero extra config, and so the
+# bridge's 127.0.0.1 is the same 127.0.0.1 the ROS 1 side binds.
 #
 #   docker compose build
-#   docker compose up            # both nodes
-#   docker compose up stt        # transcription only (no mic needed)
+#   docker compose up                  # the whole pipeline
+#   docker compose up stt              # transcription only (no mic needed)
+#   docker compose up voice doa        # capture + bearing, no STT
+#   docker compose stop voice doa wake # frees the ReSpeaker for doa_session.py
 #
 services:
   voice:
@@ -27,22 +38,48 @@ services:
       - audio
     environment:
       - ROS_DOMAIN_ID=0
-    # 4-mic array -> raise the default cap (max_mics defaults to 3).
-    # mic_name_filter pins the real array by device-name substring and excludes
-    # stray inputs (e.g. an empty dock jack) that would otherwise be auto-picked
-    # as a dead channel and collapse the beamformer. Set it to a substring of
-    # your mics' name (here the PU425 lavaliers enumerate as "Earpods"); clear
-    # it (-p mic_name_filter:="") to fall back to plain auto-detection.
-    # publish_raw + a short publish_interval are for the demo dashboard: the raw
-    # multichannel tap feeds the "before" spectrogram, and 2 s frames make the
-    # visuals/transcript feel live. Drop both (or raise the interval) for a
-    # production run that only needs /dorai_clean_audio.
+    # ARRAY MODE — the ReSpeaker 4 Mic Array (UAC1.0, atb card 1, id
+    # ArrayUAC10, USB 2886:0018). This is ONE device with SIX channels at a
+    # FIXED 16 kHz, not four devices at 48 kHz, so the old max_mics /
+    # mic_name_filter auto-detection cannot express it: that path treats every
+    # *device* as one microphone and downmixes it to mono, which collapses all
+    # four capsules into a single stream and leaves the beamformer with
+    # nothing to beam-form. array_channels switches voice_mod to opening the
+    # board once and treating the listed DEVICE channels as the array.
+    #
+    # Channel map is FL FR FC LFE SL SR:
+    #   ch0  the board's own XMOS processed mix   (not a capsule)
+    #   ch1..ch4  the raw capsules                <- the array, and doa_mod's input
+    #   ch5  playback reference                   (not a capsule)
+    # hence 1,2,3,4. array_device pins the board by a substring of its
+    # PORTAUDIO name, which is not the ALSA card id: on atb the card id is
+    # ArrayUAC10 but PortAudio calls the device "ReSpeaker 4 Mic Array
+    # (UAC1.0): USB Audio (hw:N,0)", so the filter has to be "ReSpeaker".
+    # NEVER pin the number in that hw:N,0 or any card index: atb reassigns
+    # ALSA card numbers across reboots (the array was card 1, a reboot gave
+    # that slot to the NVidia HDMI codec and the array came back as card 2).
+    # Resolution is by name, at startup, every time. Drop the parameter and
+    # voice_mod takes the widest real input device and says so loudly.
+    #
+    # requested_rate is 16000 because the board is fixed there. That also
+    # switches the per-mic resampler to a 1:1 passthrough and disables the
+    # clock-drift trim loop: with one converter there is no second crystal to
+    # lock to, and a trim would inject a per-capsule sub-sample delay, which is
+    # a bearing error rather than a correction.
+    #
+    # publish_raw + publish_raw_fast feed the dashboard's "before" panels;
+    # publish_raw_mc is doa_mod's input (multichannel AND fast — the other two
+    # taps are one or the other). 0.5 s frames make the visuals and transcript
+    # feel live; raise publish_interval for a production run that only needs
+    # /dorai_clean_audio.
     command: >
       ros2 run voice_mod voice --ros-args
-      -p max_mics:=4
-      -p mic_name_filter:=Earpods
+      -p array_channels:="1,2,3,4"
+      -p array_device:=ReSpeaker
+      -p requested_rate:=16000
       -p publish_raw:=true
       -p publish_raw_fast:=true
+      -p publish_raw_mc:=true
       -p publish_interval:=0.5
     restart: unless-stopped
 
@@ -62,6 +99,121 @@ services:
       ros2 run stt_mod stt --ros-args
       -p engine:=vosk
       -p model_lang:=en-us
+    restart: unless-stopped
+
+  # Direction of arrival — /dorai/doa, per DEMO_INTERFACES.
+  #
+  # NO /dev/snd HERE, ON PURPOSE. The ReSpeaker is a single UAC1.0 device and
+  # therefore a single exclusive ALSA capture endpoint, and voice_mod owns it.
+  # doa_mod takes voice_mod's raw multichannel tap instead — same audio, same
+  # clock, before any beamforming — so the device is never opened twice.
+  # depends_on is ordering only: doa_mod waits for the tap rather than failing
+  # if it is late, and says so in its logs every 10 s until audio arrives.
+  doa:
+    build: .
+    image: dorai:latest
+    network_mode: host
+    ipc: host        # shared /dev/shm — see note on the voice service
+    environment:
+      - ROS_DOMAIN_ID=0
+    depends_on:
+      - voice
+    # 32 mm known-circle geometry on the four capsules, NOT the walk-around
+    # calibration: MDS recovers geometry only up to a rotation AND a
+    # reflection, and the reflection is the 180 deg failure.
+    #
+    # hop:=512 is PARITY WITH THE VENDOR'S live_doa.py and is load-bearing.
+    # This node originally hopped 1600, on two justifications that both turned
+    # out to be wrong when measured on atb (2026-09-10):
+    #
+    #   "1600 lands on the contract's 10 Hz cap" — it does not matter. Publish
+    #   is driven by arrival of /dorai_raw_mc, not by the hop, so BOTH values
+    #   publish at ~9.8 Hz. The hop only changes how many analysis windows feed
+    #   the pooled SRP accumulator between publishes.
+    #
+    #   "31 Hz of SRP + LSQ is too expensive" — measured, it is not. A second
+    #   node at hop 512 ran alongside the live one for 75% of a core against
+    #   36%, on a 6-core box idling at 0.7 load.
+    #
+    # What it cost: 1600 feeds ~10 windows/s where the vendor feeds ~31, so
+    # every bearing was pooled from a third of the evidence, and block overlap
+    # fell from 75% to 22%. The pooled spectrum is what took the vendor's mean
+    # error from 48.4 to 13.0 deg, so starving it degrades the bearing without
+    # breaking it — worst on short utterances, which is exactly what a wake
+    # word is. Do not raise this again without re-measuring both claims above.
+    #
+    # subtract_noise:=false is also vendor parity: it is a --subtract-noise
+    # OPT-IN flag in live_doa.py, not a default. Turn it back on if the room
+    # has a genuinely STATIONARY interferer (it recovered 13.0 -> 7.5 deg on
+    # the vendor's session, which had a fan at ~280 deg). It carves out
+    # whatever it has learned, so it hurts if that source moves.
+    command: >
+      ros2 run doa_mod doa --ros-args
+      -p hop:=512
+      -p subtract_noise:=false
+      -p avg_tc:=2.0
+    restart: unless-stopped
+
+  # Wake word — /dorai/wake, per DEMO_INTERFACES.
+  #
+  # Shares the Vosk model cache with stt: wake_mod adds NO new dependency, it
+  # builds a second KaldiRecognizer over the same 16 kHz model with a one-word
+  # grammar attached. The keyword must be in that model's lexicon — "artaban"
+  # is NOT (vosk-model-small-en-us-0.15 warns "Ignoring word missing in
+  # vocabulary" and then builds a grammar that can never fire), so the default
+  # is "marvin": two syllables, sonorant throughout so its energy sits in the
+  # 200-1000 Hz band a beamformed 16 kHz stream carries best, and zero raw
+  # false hits over a 4.1 minute negative take -- the widest margin of every
+  # candidate measured. See wake_node.py for the numbers.
+  #
+  # A wake event needs an ENDPOINTED result that is the keyword ALONE, at word
+  # confidence >= min_conf. Firing on a partial hypothesis instead produced 28
+  # false alarms in those same 4.1 minutes; this rule produced 0. The cost is
+  # ~0.8 s of endpointing latency, which does not affect the published stamp.
+  #
+  # wake_mod owns the bearing pairing (contract), which is why it subscribes to
+  # /dorai/doa: it attaches the bearing whose stamp is nearest the wake word's
+  # own audio window, not the newest one, so the bridge and the ROS 1 behaviour
+  # node stay dumb.
+  wake:
+    build: .
+    image: dorai:latest
+    network_mode: host
+    ipc: host        # shared /dev/shm — see note on the voice service
+    environment:
+      - ROS_DOMAIN_ID=0
+    volumes:
+      - dorai-models:/root/.cache
+    depends_on:
+      - voice
+    command: >
+      ros2 run wake_mod wake --ros-args
+      -p keyword:=marvin
+    restart: unless-stopped
+
+  # UDP bridge to ROS 1 Noetic on the atb host — the container half only; the
+  # ROS 1 half lives in ros1/dorai_demo and is another workstream's.
+  #
+  # network_mode: host is what makes 127.0.0.1 mean the same thing on both
+  # sides. No /dev/snd, no models, no state: it is a dumb pipe that passes the
+  # JSON through byte for byte. It comes up whether or not the ROS 1 half
+  # exists and keeps running when that half restarts — an absent peer is the
+  # normal state before roslaunch, not an error.
+  bridge:
+    build: .
+    image: dorai:latest
+    network_mode: host
+    ipc: host        # shared /dev/shm — see note on the voice service
+    environment:
+      - ROS_DOMAIN_ID=0
+    # Ports and rate limits are the contract's, restated here so a change is
+    # visible in review rather than buried in a default:
+    #   container -> ROS 1 : 127.0.0.1:5801   (doa 10 Hz, wake event-driven)
+    #   ROS 1 -> container : 127.0.0.1:5802   (person 10 Hz, robot_state 5 Hz)
+    command: >
+      ros2 run bridge_mod bridge --ros-args
+      -p tx_port:=5801
+      -p rx_port:=5802
     restart: unless-stopped
 
   # Demo dashboard — subscribes to the pipeline topics and serves a single-page
@@ -94,6 +246,14 @@ services:
       - port:=${DORAI_WEB_PORT:-8080}
       - -p
       - play_device:=ALC700 Analog
+      # Where the robot's nose points in the ReSpeaker's own 0..360 frame.
+      # MEASURED 2026-09-10: the board's 0 faces the robot's LEFT, so the
+      # heading sits at 270. Without this the dial's "FRONT" marker is a lie
+      # and the needle reads 90 degrees off. The same number is set for
+      # behaviour_node in dorai_demo/launch/demo.launch; if the board is ever
+      # remounted, BOTH have to change together.
+      - -p
+      - mic_forward_deg:=270.0
     restart: unless-stopped
 
 volumes:

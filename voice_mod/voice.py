@@ -100,6 +100,21 @@ class Resampler:
         self.backend = "unknown"
         self._r = None
         self.variable = False
+        self.passthrough = False
+
+        # One clock, one rate -> no conversion at all. A multichannel array
+        # (ReSpeaker) samples every capsule off the SAME crystal at exactly
+        # OUTPUT_RATE, so there is nothing to convert and nothing to correct.
+        # Running libsamplerate at ratio 1.0 would still band-limit the signal
+        # and, far worse, let the drift loop trim each channel's ratio
+        # independently: that injects a per-channel sub-sample delay and
+        # destroys precisely the inter-channel phase the beamformer and
+        # doa_mod live on. 32 mm at 343 m/s is 93 us end to end, so a 0.1 %
+        # ratio error is a whole bearing's worth of delay within a second.
+        if int(round(input_rate)) == int(round(output_rate)):
+            self.passthrough = True
+            self.backend = "passthrough (1:1, single clock)"
+            return
 
         try:
             import samplerate as _libsr
@@ -119,6 +134,8 @@ class Resampler:
         backend only) for closed-loop drift correction."""
         if x.size == 0:
             return np.zeros(0, dtype=np.float32)
+        if self.passthrough:
+            return x.astype(np.float32, copy=False)
         if self._r is not None:
             ratio = self.base_ratio * ratio_scale
             return self._r.process(
@@ -353,6 +370,131 @@ def detect_microphones(logger, include_internal=False, max_mics=3,
 
 
 # ---------------------------------------------------------------------------
+# Array mode — ONE multichannel device whose channels are the array mics.
+# ---------------------------------------------------------------------------
+def parse_channel_list(spec):
+    """Parse "1,2,3,4" into [1, 2, 3, 4]. Empty/blank -> []."""
+    spec = str(spec or "").strip()
+    if not spec:
+        return []
+    out = []
+    for tok in spec.replace(";", ",").split(","):
+        tok = tok.strip()
+        if tok:
+            out.append(int(tok))
+    return out
+
+
+def resolve_array_device(logger, name_filter, channels, device_channels=0,
+                         requested_rate=None):
+    """Resolve ONE multichannel capture device into M array mics.
+
+    This is the ReSpeaker path, and it exists because the auto-detect path
+    above cannot express it. detect_microphones() treats every *device* as one
+    microphone and downmixes whatever it opens to mono (capped at 2 channels),
+    which is right for N separate USB lavaliers and exactly wrong for a
+    ReSpeaker 4 Mic Array: that is ONE UAC1.0 device carrying six channels at
+    a fixed 16 kHz, and downmixing it collapses all four capsules into a
+    single stream, leaving the beamformer running at M=1 with nothing to
+    beam-form and doa_mod with no baseline to measure a delay across.
+
+    So: open the device ONCE at its native width and hand each requested
+    channel index to its own MicChannel. One device, one converter, one
+    clock — the drift loop is switched off in this mode (see
+    VoiceMod._single_clock) because there is no second crystal to lock to.
+
+    ReSpeaker channel map is `FL FR FC LFE SL SR`:
+        ch0  processed mix (the board's own XMOS beamform/AEC/NS)
+        ch1..ch4  the raw capsules  <- these are the array
+        ch5  playback reference
+    hence the `1,2,3,4` default in docker-compose.yml.
+
+    Returns the same dict shape detect_microphones() returns, plus
+    `stream_channel` (index within the opened device) and `n_dev_ch` (how wide
+    to open the stream). Every entry shares one `device`.
+    """
+    devices = sd.query_devices()
+    inputs = [(i, d) for i, d in enumerate(devices)
+              if d.get("max_input_channels", 0) > 0]
+    if not inputs:
+        raise RuntimeError("array_channels set but no input devices exist.")
+
+    # RESOLVE BY NAME, NEVER BY INDEX. ALSA card numbers on atb are not stable
+    # across reboots -- the ReSpeaker was card 1, a reboot handed that slot to
+    # the NVidia HDMI codec and the array came back as card 2 -- and the
+    # PortAudio index moves with them. Nothing here, and nothing in
+    # docker-compose.yml, may pin a card number, an index, or an hw:X,Y.
+    #
+    # The name to match is the PORTAUDIO name, which is not the ALSA card id:
+    # the card id is `ArrayUAC10` but PortAudio calls the same device
+    # "ReSpeaker 4 Mic Array (UAC1.0): USB Audio (hw:N,0)". Matching on
+    # "ArrayUAC10" therefore finds nothing. Use "ReSpeaker".
+    needle = str(name_filter or "").strip().lower()
+    if needle:
+        cand = [(i, d) for i, d in inputs if needle in d["name"].lower()]
+        if not cand:
+            # Loud, and with the evidence attached: a wrong-device fallback
+            # that quietly captured the onboard analog jack would look exactly
+            # like a broken beamformer on demo day.
+            raise RuntimeError(
+                f"array_device='{name_filter}' matched no input device, so "
+                f"voice_mod is refusing to start rather than capturing some "
+                f"other card by accident. Available inputs were: "
+                + "; ".join(f"#{i} '{d['name']}' ({d['max_input_channels']}ch)"
+                            for i, d in inputs)
+                + ". Note that the filter matches the PORTAUDIO device name, "
+                  "not the ALSA card id: for the ReSpeaker use 'ReSpeaker', "
+                  "not 'ArrayUAC10'.")
+    else:
+        # No name given: take the widest REAL input device. The same exclusion
+        # list the auto-detect path uses is load-bearing here, because ALSA's
+        # `default` and `sysdefault` advertise 128 input channels and would
+        # otherwise win every time -- and they are software mixers, not the
+        # array, so the "capsules" behind them would be silence.
+        cand = [(i, d) for i, d in inputs
+                if is_usable_input(d["name"], include_internal=True)]
+        cand.sort(key=lambda it: -int(it[1]["max_input_channels"]))
+
+    # Prefer a candidate wide enough for the requested channels; among those,
+    # the first (name filter order / widest).
+    need = max(channels) + 1
+    wide = [(i, d) for i, d in cand
+            if int(d.get("max_input_channels", 0)) >= need]
+    if not wide:
+        raise RuntimeError(
+            f"array_channels={channels} needs at least {need} device channels; "
+            f"candidates offer "
+            f"{[(d['name'], d['max_input_channels']) for _, d in cand]}")
+    idx, dev = wide[0]
+    if not needle:
+        # Auto-picked. Say so at WARNING with the whole shortlist, because the
+        # silent version of this line is the one that captures the dock jack
+        # on demo day and looks like a dead beamformer.
+        logger.warning(
+            f"array_device was not set, so voice_mod auto-picked the widest "
+            f"input device: #{idx} '{dev['name']}' ({dev['max_input_channels']}ch). "
+            f"Other candidates were: "
+            + "; ".join(f"#{i} '{d['name']}' ({d['max_input_channels']}ch)"
+                        for i, d in wide[1:]) + ". Pin it with "
+            f"-p array_device:=<name substring> if that is not the array.")
+
+    native = int(dev.get("max_input_channels", 1))
+    n_dev_ch = native if device_channels <= 0 else int(device_channels)
+    n_dev_ch = max(need, min(n_dev_ch, native))
+    rate = choose_rate(idx, requested_rate, channels=n_dev_ch)
+    logger.info(
+        f"Array device #{idx} '{dev['name']}': opening {n_dev_ch}ch @ {rate} Hz, "
+        f"using channels {channels} as mic0..mic{len(channels) - 1}")
+
+    return [
+        {"label": f"mic{k}", "device": idx, "sample_rate": rate,
+         "name": f"{dev['name']} ch{c}", "capture_channels": 1,
+         "stream_channel": int(c), "n_dev_ch": n_dev_ch}
+        for k, c in enumerate(channels)
+    ]
+
+
+# ---------------------------------------------------------------------------
 # dorai_beamformer.ort beamformer wrapper.
 # ---------------------------------------------------------------------------
 class Beamformer:
@@ -433,6 +575,25 @@ class VoiceMod(Node):
         # PU425) are stereo-native and deliver a ~3x weaker signal when opened
         # mono, so auto restores full level while staying mono downstream.
         self.declare_parameter("capture_channels", 0)
+        # --- Array mode (ReSpeaker and any other single multichannel board) --
+        # Set array_channels to a comma-separated list of DEVICE channel
+        # indices and voice_mod stops hunting for N separate USB mics: it opens
+        # ONE device and treats those channels as the array. For the ReSpeaker
+        # 4 Mic Array (UAC1.0, 6ch, 16 kHz fixed, map FL FR FC LFE SL SR) the
+        # answer is "1,2,3,4" -- ch0 is the board's own processed mix and ch5
+        # is the playback reference, neither of which is a capsule.
+        # Kept as a STRING rather than an int array so `-p array_channels:=""`
+        # cleanly means "off" (an empty ROS 2 integer-array parameter cannot be
+        # declared without an explicit descriptor type) and so the compose file
+        # stays readable.
+        self.declare_parameter("array_channels", "")
+        # Case-insensitive device-name substring picking the array device.
+        # Empty = take the widest input device, which is the array on any host
+        # that has one. Only consulted when array_channels is set.
+        self.declare_parameter("array_device", "")
+        # How many channels to open on that device. 0 = the device's native
+        # width (6 on the ReSpeaker). Never opens fewer than max(channels)+1.
+        self.declare_parameter("array_device_channels", 0)
         self.declare_parameter("publish_interval", 10.0, dyn)   # N-second frame
         self.declare_parameter("output_topic", "/dorai_clean_audio")
         # On a 4-core Pi 4B, letting ORT grab all cores starves the PortAudio
@@ -475,6 +636,9 @@ class VoiceMod(Node):
         self.prefer_usb = bool(gp("prefer_usb").value)
         self.mic_name_filter = str(gp("mic_name_filter").value or "").strip()
         self.capture_channels = int(gp("capture_channels").value)
+        self.array_channels = parse_channel_list(gp("array_channels").value)
+        self.array_device = str(gp("array_device").value or "").strip()
+        self.array_device_channels = int(gp("array_device_channels").value)
         self.publish_interval = float(gp("publish_interval").value)
         self.output_topic = gp("output_topic").value
         num_threads = int(gp("num_threads").value)
@@ -496,16 +660,48 @@ class VoiceMod(Node):
             f"publish_interval={self.publish_interval:.1f}s"
         )
 
-        resolved = detect_microphones(
-            self.get_logger(), self.include_internal, self.max_mics,
-            self.requested_rate, self.prefer_usb, self.capture_channels,
-            self.mic_name_filter,
-        )
+        # Array mode (one multichannel board) or the legacy N-separate-devices
+        # auto-detect. `_single_clock` is what the rest of the node keys off:
+        # it means every channel came off one converter, so the per-mic
+        # drift-correcting resample loop has nothing to correct and is skipped.
+        if self.array_channels:
+            resolved = resolve_array_device(
+                self.get_logger(), self.array_device or self.mic_name_filter,
+                self.array_channels, self.array_device_channels,
+                self.requested_rate,
+            )
+            self._single_clock = True
+            # One lock for the WHOLE array. The four capsules come off one
+            # stream, so they must always hold exactly the same number of
+            # samples; MicChannel's per-channel locks cannot guarantee that,
+            # because the worker's resample_in() loop can interleave with the
+            # callback's push() loop and drain some channels for a block the
+            # others have not been given yet. That leaves one capsule a whole
+            # 100 ms block ahead FOREVER -- observed on a real start, mic0 at
+            # fifo=4800 against 3200 on the rest -- and 100 ms is ~1600
+            # samples against a gcc_phat max_tau of 5, so every pair touching
+            # that capsule decoheres and the bearing is built from a channel a
+            # tenth of a second out. The lock is held for a passthrough plus a
+            # 2nd-order filter over 1600 samples x 4, i.e. tens of
+            # microseconds against a 100 ms callback period.
+            self._array_lock = threading.Lock()
+        else:
+            resolved = detect_microphones(
+                self.get_logger(), self.include_internal, self.max_mics,
+                self.requested_rate, self.prefer_usb, self.capture_channels,
+                self.mic_name_filter,
+            )
+            self._single_clock = False
+            self._array_lock = None
         self.mics = [
             MicChannel(m["label"], m["device"], m["sample_rate"], m["name"],
                        hpf_hz=self.hpf_hz, capture_channels=m["capture_channels"])
             for m in resolved
         ]
+        for ch, m in zip(self.mics, resolved):
+            ch.stream_channel = m.get("stream_channel")
+        self._array_device = resolved[0]["device"] if self._single_clock else None
+        self._array_n_dev_ch = resolved[0].get("n_dev_ch") if self._single_clock else None
         self.num_channels = len(self.mics)
 
         self.beam = Beamformer(model_path, num_threads, self.get_logger())
@@ -550,6 +746,33 @@ class VoiceMod(Node):
         self._fast_acc = []              # mono blocks pending fast publish
         self._last_fast = time.monotonic()
         self._fast_seq = 0
+
+        # Fast MULTICHANNEL raw tap. This is doa_mod's input, and it exists
+        # because neither existing tap can serve it: /dorai_raw_audio is
+        # multichannel but arrives one publish_interval at a time (2 Hz at the
+        # demo's 0.5 s frames, too slow for a 10 Hz bearing), and
+        # /dorai_raw_fast is fast but mono-downmixed, which destroys the very
+        # inter-channel delays a direction estimate is made of. Same 4-float
+        # header and interleaving as /dorai_raw_audio, just smaller and more
+        # often. The ReSpeaker is a single exclusive ALSA capture endpoint, so
+        # this tap is also the ONLY way doa_mod can get array audio at all
+        # while voice_mod holds the device.
+        self.declare_parameter("publish_raw_mc", False)
+        self.declare_parameter("raw_mc_topic", "/dorai_raw_mc")
+        # 0.1 s = the worker tick, so exactly one block per publish and a
+        # 10 Hz cadence, which is the DEMO_INTERFACES rate cap for /dorai/doa.
+        self.declare_parameter("raw_mc_period", 0.1, dyn)
+        self.publish_raw_mc = bool(self.get_parameter("publish_raw_mc").value)
+        self.raw_mc_topic = self.get_parameter("raw_mc_topic").value
+        self.raw_mc_period = float(self.get_parameter("raw_mc_period").value)
+        self.raw_mc_pub = (
+            self.create_publisher(Float32MultiArray, self.raw_mc_topic, 10)
+            if self.publish_raw_mc else None)
+        self._mc_fast_acc = []           # [M, L_OUT] blocks pending
+        self._mc_fast_cap0 = None        # capture_s of the oldest pending block
+        self._last_mc_fast = time.monotonic()
+        self._mc_fast_seq = 0
+
         self.raw_pub = None
         if self.publish_raw:
             self.raw_pub = self.create_publisher(
@@ -578,20 +801,43 @@ class VoiceMod(Node):
             target=self._pub_loop, name="voice-pub", daemon=True)
         self._pub_thread.start()
 
-        for ch in self.mics:
-            blocksize = int(ch.sample_rate * BLOCK_S)
-            ch.stream = sd.InputStream(
-                samplerate=ch.sample_rate, device=ch.device,
-                channels=ch.capture_channels,
+        if self._single_clock:
+            # ONE stream for the whole array. Opening the device once per
+            # capsule would fail anyway (a UAC1.0 array is a single exclusive
+            # ALSA capture endpoint), and it is the shared open that gives
+            # doa_mod its sample-accurate inter-channel alignment.
+            rate = self.mics[0].sample_rate
+            blocksize = int(rate * BLOCK_S)
+            self._shared_stream = sd.InputStream(
+                samplerate=rate, device=self._array_device,
+                channels=self._array_n_dev_ch,
                 blocksize=blocksize, dtype="float32",
                 latency=self.input_latency,
-                callback=self._make_callback(ch),
+                callback=self._make_array_callback(),
             )
-            ch.stream.start()
+            self._shared_stream.start()
             self.get_logger().info(
-                f"Opened {ch.label} dev#{ch.device} @ {ch.sample_rate} Hz "
-                f"(blk {blocksize}) via {ch.resampler.backend}"
+                f"Opened array dev#{self._array_device} @ {rate} Hz "
+                f"({self._array_n_dev_ch}ch, blk {blocksize}) -> "
+                f"{[ch.stream_channel for ch in self.mics]} via "
+                f"{self.mics[0].resampler.backend}"
             )
+        else:
+            self._shared_stream = None
+            for ch in self.mics:
+                blocksize = int(ch.sample_rate * BLOCK_S)
+                ch.stream = sd.InputStream(
+                    samplerate=ch.sample_rate, device=ch.device,
+                    channels=ch.capture_channels,
+                    blocksize=blocksize, dtype="float32",
+                    latency=self.input_latency,
+                    callback=self._make_callback(ch),
+                )
+                ch.stream.start()
+                self.get_logger().info(
+                    f"Opened {ch.label} dev#{ch.device} @ {ch.sample_rate} Hz "
+                    f"(blk {blocksize}) via {ch.resampler.backend}"
+                )
 
         self._worker = threading.Thread(
             target=self._run, name="voice-worker", daemon=True)
@@ -718,6 +964,31 @@ class VoiceMod(Node):
             ch.push(mono.copy(), capture_mono)
         return callback
 
+    def _make_array_callback(self):
+        """One PortAudio callback fanning a single multichannel capture out to
+        the per-capsule MicChannels. No downmix, no per-channel resample: the
+        channels are already on one clock at one rate, and slicing preserves
+        the sample-exact alignment the TDOA estimate depends on."""
+        def callback(indata, frames, time_info, status):
+            if status:
+                for ch in self.mics:
+                    ch.xruns += 1
+                self.get_logger().warning(
+                    f"array xrun ({status}); total={self.mics[0].xruns}. If "
+                    f"frequent, raise input_latency or lower num_threads.",
+                    throttle_duration_sec=5.0,
+                )
+            now = time.monotonic()
+            try:
+                age = time_info.currentTime - time_info.inputBufferAdcTime
+                capture_mono = now - max(age, 0.0)
+            except Exception:
+                capture_mono = now
+            with self._array_lock:
+                for ch in self.mics:
+                    ch.push(indata[:, ch.stream_channel].copy(), capture_mono)
+        return callback
+
     def _run(self):
         next_tick = time.monotonic()
         while self._running:
@@ -737,11 +1008,23 @@ class VoiceMod(Node):
                 )
 
     def _tick(self):
-        for ch in self.mics:
-            ch.resample_in()
+        if self._array_lock is not None:
+            # Atomic against the array callback: see _make_array_callback.
+            with self._array_lock:
+                for ch in self.mics:
+                    ch.resample_in()
+        else:
+            for ch in self.mics:
+                ch.resample_in()
         # Lock the independent USB clocks to each other by pulling every
-        # channel's FIFO toward the cross-channel mean.
-        if len(self.mics) > 1:
+        # channel's FIFO toward the cross-channel mean. Skipped entirely in
+        # array mode: one converter means the FIFOs advance in lockstep by
+        # construction, so the loop would only be reacting to its own
+        # quantisation noise -- and each trim it applied would resample one
+        # capsule relative to the others, which is a bearing error, not a
+        # correction. (The resampler is a 1:1 passthrough there too, so
+        # update_ratio() is already a no-op; this makes the intent explicit.)
+        if len(self.mics) > 1 and not self._single_clock:
             ref = sum(ch.fifo_len() for ch in self.mics) / len(self.mics)
             for ch in self.mics:
                 ch.update_ratio(ref)
@@ -780,6 +1063,10 @@ class VoiceMod(Node):
             with self.mics[0].lock:
                 cap = self.mics[0].last_capture_mono
             capture_s = (cap or time.monotonic()) - self._t0
+            if self.raw_mc_pub is not None:
+                if not self._mc_fast_acc:
+                    self._mc_fast_cap0 = capture_s
+                self._mc_fast_acc.append(block)
             with self._acc_lock:
                 self._mc_acc.append(block)
                 self._mc_caps.append(capture_s)
@@ -817,6 +1104,40 @@ class VoiceMod(Node):
             fmsg.layout.data_offset = 4
             self.raw_fast_pub.publish(fmsg)
             self._fast_seq += 1
+
+        # Fast multichannel tap: flush the pending blocks as one interleaved
+        # frame. Deliberately silent (no per-frame log line like _emit_raw's)
+        # because at 10 Hz that would drown the diagnostics.
+        # The window is 10 percent short of the nominal period on purpose. The
+        # worker already ticks on a BLOCK_S grid, so one block is ready every
+        # period; a hard `>= period` test fails on every tick that runs a hair
+        # early, and the block it skipped is then published together with the
+        # next one. Measured on the ReSpeaker that turned a 10 Hz tap into a
+        # 6.4 Hz one carrying 3200 samples at a time, which in turn cost
+        # doa_mod a third of its output rate.
+        if (self.raw_mc_pub is not None and self._mc_fast_acc
+                and now - self._last_mc_fast >= self.raw_mc_period * 0.9):
+            self._last_mc_fast = now
+            mc = np.concatenate(self._mc_fast_acc, axis=1)      # [M, T]
+            cap0 = self._mc_fast_cap0 if self._mc_fast_cap0 is not None else 0.0
+            self._mc_fast_acc = []
+            self._mc_fast_cap0 = None
+            m = mc.shape[0]
+            interleaved = mc.T.reshape(-1).astype(np.float32)
+            mmsg = Float32MultiArray()
+            header = np.array(
+                [cap0, float(OUTPUT_RATE), float(m), float(self._mc_fast_seq)],
+                dtype=np.float32)
+            mmsg.data = np.concatenate((header, interleaved)).tolist()
+            mmsg.layout.data_offset = 4
+            mmsg.layout.dim = [
+                MultiArrayDimension(label="channels", size=m,
+                                    stride=len(interleaved)),
+                MultiArrayDimension(label="samples", size=mc.shape[1],
+                                    stride=mc.shape[1]),
+            ]
+            self.raw_mc_pub.publish(mmsg)
+            self._mc_fast_seq += 1
 
         self._maybe_diag(time.monotonic())
 
@@ -959,6 +1280,20 @@ class VoiceMod(Node):
         with self._acc_lock:
             acc = len(self._mc_acc) * L_OUT
         text = " | ".join(parts) + f" || acc={acc} samples"
+        # In array mode the depths are equal by construction. If they are not,
+        # the capsules are skewed by whole blocks and every bearing downstream
+        # is built on a lie, so say so at ERROR rather than leaving it to
+        # whoever happens to read a diagnostics line.
+        if self._single_clock:
+            depths = [ch.fifo_len() for ch in self.mics]
+            if max(depths) != min(depths):
+                self.get_logger().error(
+                    f"CAPSULE SKEW: FIFO depths {depths} differ by "
+                    f"{max(depths) - min(depths)} samples "
+                    f"({(max(depths) - min(depths)) / OUTPUT_RATE * 1000:.0f} ms). "
+                    f"The capsules are no longer sample-aligned and /dorai/doa "
+                    f"cannot be trusted. Restart voice_mod.",
+                    throttle_duration_sec=10.0)
         self.get_logger().info(text)
         self.diag_pub.publish(String(data=text))
 
@@ -966,11 +1301,12 @@ class VoiceMod(Node):
         self._running = False
         if self._worker.is_alive():
             self._worker.join(timeout=2.0)
-        for ch in self.mics:
-            if getattr(ch, "stream", None) is not None:
+        for st in ([getattr(self, "_shared_stream", None)]
+                   + [getattr(ch, "stream", None) for ch in self.mics]):
+            if st is not None:
                 try:
-                    ch.stream.stop()
-                    ch.stream.close()
+                    st.stop()
+                    st.close()
                 except Exception:
                     pass
         # flush any tail audio so the last words aren't lost

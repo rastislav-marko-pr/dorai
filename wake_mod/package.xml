@@ -1,0 +1,33 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>wake_mod</name>
+  <version>0.1.0</version>
+  <description>
+    dorai wake-word gate. Builds a SECOND Vosk KaldiRecognizer over the same
+    16 kHz model stt_mod already loads, constrained to a one-word grammar
+    (keyword plus an explicit [unk] garbage token), and publishes /dorai/wake
+    as the DEMO_INTERFACES JSON. Owns the bearing pairing: it keeps a ring of
+    recent /dorai/doa messages and attaches the one whose stamp is nearest the
+    wake word's own audio window, so the bridge and the behaviour node stay
+    dumb. Adds no dependency.
+  </description>
+  <maintainer email="rastislav.marko@panzarobotics.com">Panza Robotics</maintainer>
+  <license>None</license>
+
+  <depend>rclpy</depend>
+  <depend>std_msgs</depend>
+
+  <!-- vosk is pip-installed in the image (stt_mod already uses it); rosdep
+       has no key for it. -->
+  <exec_depend>python3-numpy</exec_depend>
+
+  <test_depend>ament_copyright</test_depend>
+  <test_depend>ament_flake8</test_depend>
+  <test_depend>ament_pep257</test_depend>
+  <test_depend>python3-pytest</test_depend>
+
+  <export>
+    <build_type>ament_python</build_type>
+  </export>
+</package>

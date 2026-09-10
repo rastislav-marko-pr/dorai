@@ -2,8 +2,8 @@
 #
 # Runs ROS 2 Jazzy in-container, so the host OS is irrelevant: this builds and
 # runs identically on Ubuntu 20.04 / 22.04 hosts that only have Docker. The
-# same image serves both nodes (voice_mod, stt_mod); docker-compose picks which
-# one each service runs.
+# same image serves every node (voice_mod, stt_mod, web_mod, doa_mod, wake_mod,
+# bridge_mod); docker-compose picks which one each service runs.
 FROM ros:jazzy-ros-base
 
 ENV DEBIAN_FRONTEND=noninteractive
@@ -37,11 +37,17 @@ RUN pip3 install --no-cache-dir --break-system-packages \
 
 # --- Build the ROS 2 workspace ----------------------------------------------
 WORKDIR /ros2_ws
-COPY voice_mod src/voice_mod
-COPY stt_mod   src/stt_mod
-COPY web_mod   src/web_mod
+COPY voice_mod  src/voice_mod
+COPY stt_mod    src/stt_mod
+COPY web_mod    src/web_mod
+# doa_mod ships vad.onnx (2.3 MB) as package data; wake_mod and bridge_mod are
+# pure python and add no dependency — wake_mod reuses the vosk already
+# installed for stt_mod, and bridge_mod needs only the standard library.
+COPY doa_mod    src/doa_mod
+COPY wake_mod   src/wake_mod
+COPY bridge_mod src/bridge_mod
 
-# Source the ROS base, then colcon-build both ament_python packages.
+# Source the ROS base, then colcon-build every ament_python package.
 RUN . /opt/ros/jazzy/setup.sh && \
     colcon build --symlink-install
 
