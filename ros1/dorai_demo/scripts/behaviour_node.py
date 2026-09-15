@@ -142,7 +142,14 @@ class BehaviourNode(object):
         self.state_rate_hz = float(rospy.get_param("~state_rate_hz", 5.0))
 
         # -- wake gate ------------------------------------------------------
-        self.wake_min_confidence = float(rospy.get_param("~wake_min_confidence", 0.4))
+        # 0.15, down from 0.40 (2026-09-15). Every "artie" was recognised at
+        # word confidence 1.00 and then rejected here: bearing confidences
+        # measured 0.19, 0.28, 0.31, 0.35 and 0.36 on the robot. The number is
+        # peak sharpness times the closure pass rate, and an isolated keyword
+        # rarely fills the pooled window. The risk of a low value is bounded:
+        # the bearing only chooses which way to turn, and the robot walks only
+        # if the camera then finds a person; otherwise acquire times out.
+        self.wake_min_confidence = float(rospy.get_param("~wake_min_confidence", 0.15))
         self.wake_max_age_s = float(rospy.get_param("~wake_max_age_s", 2.0))
         # Where the robot's forward axis sits in the ReSpeaker's 0..360 CCW
         # frame. Measure this once on the day; it is the single calibration
