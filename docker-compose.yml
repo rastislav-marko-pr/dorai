@@ -147,6 +147,14 @@ services:
     # has a genuinely STATIONARY interferer (it recovered 13.0 -> 7.5 deg on
     # the vendor's session, which had a fan at ~280 deg). It carves out
     # whatever it has learned, so it hurts if that source moves.
+    # vad_threshold:=0.30, not the vendor's 0.45: the bearing is reported
+    # LOW CONFIDENCE whenever the voice detector sees no speech in the last
+    # closure_window_s, and on 2026-09-15 it caught only 19-36 of ~94 frames
+    # while someone was actually talking. The closure check was passing ~60%
+    # of those frames, well inside its 0.7 fail limit, so it was the detector,
+    # not the direction maths, starving the bearing. Lower counts quieter and
+    # more distant speech; too low and robot motor noise starts to count.
+    # Live-tunable: `ros2 param set /doa_mod vad_threshold <0..1>`.
     # avg_tc:=0.7, not the vendor's 2.0: the pooled forget time IS the lag
     # between a talker moving and the bearing following them, and at 2.0 it
     # took several seconds of speech to swing. 0.7 is what the first armed
@@ -157,6 +165,7 @@ services:
       -p hop:=512
       -p subtract_noise:=false
       -p avg_tc:=0.7
+      -p vad_threshold:=0.30
     restart: unless-stopped
 
   # Wake word — /dorai/wake, per DEMO_INTERFACES.

@@ -250,35 +250,64 @@ class DoaMod(Node):
             f"vad={'neural' if self._use_neural_vad else 'rms'}")
 
     def _on_set_params(self, params):
-        """Apply a live avg_tc change without dropping accumulated evidence.
+        """Apply live changes to the parameters people tune by ear.
 
-        The accumulator stores the forget factor, not the time constant:
-        alpha = exp(-hop / (tc * fs)). Recomputing alpha in place retunes the
-        averaging while KEEPING the spatial spectrum built up so far, which is
-        what you want mid-session. Rebuilding the accumulator instead would
-        throw away the noise estimate that --subtract-noise depends on, and that
-        estimate is worth 5 degrees of accuracy on a room with a steady
-        interferer.
+        Four parameters were declared dynamic but read only at startup, so
+        `ros2 param set` reported success and silently changed nothing. They are
+        the ones that decide how readily this node reports a bearing:
 
-        doa_core.py is vendored byte-identical to the vendor's release and is
-        checksum-checked, so the formula is duplicated here rather than adding a
-        setter over there. If the vendor ever changes the decay convention this
-        is the line that has to follow it.
+          avg_tc             pooled-SRP forget time, i.e. the lag between a
+                             talker moving and the bearing following them
+          vad_threshold      how readily a frame counts as speech; only speech
+                             frames move the bearing or make it valid
+          closure_window_s   how long the validity verdict remembers speech,
+                             so how long a bearing stays valid after you stop
+          closure_fail_frac  share of speech frames allowed to fail the TDOA
+                             closure test before the bearing is declared invalid
+
+        Everything is validated before anything is applied, so a request that
+        mixes a good value with a bad one changes nothing.
+
+        avg_tc is applied by recomputing the accumulator's forget factor in
+        place, alpha = exp(-hop / (tc * fs)), which KEEPS the spatial spectrum
+        and noise estimate built so far; rebuilding the accumulator would throw
+        them away. doa_core.py is vendored byte-identical and checksum-checked,
+        so that formula is duplicated here rather than adding a setter there.
+        If the vendor ever changes the decay convention, this has to follow.
+        The other three are plain attributes read on every frame.
         """
         from rcl_interfaces.msg import SetParametersResult
+        bounds = {
+            "avg_tc": (lambda v: v > 0.0, "must be greater than zero"),
+            "vad_threshold": (lambda v: 0.0 < v < 1.0, "must be between 0 and 1"),
+            "closure_window_s": (lambda v: v > 0.0, "must be greater than zero"),
+            "closure_fail_frac": (lambda v: 0.0 <= v <= 1.0,
+                                  "must be between 0 and 1"),
+        }
+        updates = {}
         for p in params:
-            if p.name != "avg_tc":
+            if p.name not in bounds:
                 continue
-            tc = float(p.value)
-            if not (tc > 0.0):
-                return SetParametersResult(
-                    successful=False, reason="avg_tc must be greater than zero")
-            self.avg_tc = tc
-            if getattr(self, "acc", None) is not None:
-                self.acc.alpha = float(np.exp(-self.hop / (tc * self.acc.fs)))
+            ok, why = bounds[p.name]
+            try:
+                v = float(p.value)
+            except (TypeError, ValueError):
+                return SetParametersResult(successful=False,
+                                           reason=f"{p.name} must be a number")
+            if not ok(v):
+                return SetParametersResult(successful=False,
+                                           reason=f"{p.name} {why}")
+            updates[p.name] = v
+
+        for name, v in updates.items():
+            setattr(self, name, v)
+            if name == "avg_tc" and getattr(self, "acc", None) is not None:
+                self.acc.alpha = float(np.exp(-self.hop / (v * self.acc.fs)))
                 self.get_logger().info(
-                    f"avg_tc -> {tc:.2f}s (alpha {self.acc.alpha:.4f}); "
+                    f"avg_tc -> {v:.2f}s (alpha {self.acc.alpha:.4f}); "
                     f"lower reacts faster to a moving talker, higher is steadier")
+            else:
+                self.get_logger().info(f"{name} -> {v:g} (applied live)")
         return SetParametersResult(successful=True)
 
     @staticmethod
