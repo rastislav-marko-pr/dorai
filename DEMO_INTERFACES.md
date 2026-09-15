@@ -83,10 +83,12 @@ peak, and is optional: omit the key rather than sending nulls.
 ```
 
 `wake_mod` owns the pairing. It keeps a short ring of recent `/dorai/doa`
-messages and attaches the bearing whose stamp is nearest the wake word's own
-audio window. The bridge stays a dumb pipe and the behaviour node stays dumb.
-If no confident bearing is available within the window, publish with
-`confidence` 0.0 and let the consumer decide.
+messages and attaches the MOST CONFIDENT bearing heard during the whole
+utterance that contained the keyword, padded by a second either side
+(changed 2026-09-15; it used to take the bearing nearest the keyword itself).
+`stamp` is the end of that utterance. The keyword may appear anywhere in the
+utterance, and the confidence is passed through as measured: the behaviour
+node owns the gate. The bridge stays a dumb pipe and the behaviour node stays dumb.
 
 ### `/dorai/person` — published in ROS 1 by `person_node`, mirrored into ROS 2
 
@@ -169,7 +171,8 @@ Do not rediscover these.
      shipped file is silently ignored.
 - After the fix, detections run at about 15 Hz with correct metric positions and
   correct left and right sign. Verified against real objects in the room.
-- Person confidence floor is 0.6 and minimum distance 1.0 m. At a 0.5 floor an
+- Person confidence floor is 0.45 (was 0.6; a real standing person measured a
+  median of 0.52) and minimum distance 1.0 m. At a 0.5 floor an
   empty bench was reported as a person 43 percent of the time, always at 0.52 m.
 - Working probe launches to copy from live at `/tmp/atb_person_test.launch` and
   `/tmp/atb_yolo_test.launch` on atb.

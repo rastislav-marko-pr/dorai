@@ -209,9 +209,15 @@ services:
     # "artie" is in it and keeps the robot's identity. It is phonetically
     # close to "party"/"arty", so re-check false triggers with a few minutes
     # of ordinary conversation before a demo. Fallback: panza.
+    # require_isolated:=false + min_conf:=0.6 (2026-09-15): demo requirement is
+    # that "artie" anywhere in a sentence triggers. The bearing attached is the
+    # most confident one heard during that whole utterance. Every sighting of
+    # the keyword is logged with its confidence, accepted or rejected.
     command: >
       ros2 run wake_mod wake --ros-args
       -p keyword:=artie
+      -p require_isolated:=false
+      -p min_conf:=0.6
     restart: unless-stopped
 
   # UDP bridge to ROS 1 Noetic on the atb host — the container half only; the

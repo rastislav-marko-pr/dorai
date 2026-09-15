@@ -150,7 +150,9 @@ class BehaviourNode(object):
         # the bearing only chooses which way to turn, and the robot walks only
         # if the camera then finds a person; otherwise acquire times out.
         self.wake_min_confidence = float(rospy.get_param("~wake_min_confidence", 0.15))
-        self.wake_max_age_s = float(rospy.get_param("~wake_max_age_s", 2.0))
+        # 3.0 s: wake stamps are the end of the utterance, which Vosk endpoints
+        # about 0.8 s late, plus bridge transit. 2.0 left too little margin.
+        self.wake_max_age_s = float(rospy.get_param("~wake_max_age_s", 3.0))
         # Where the robot's forward axis sits in the ReSpeaker's 0..360 CCW
         # frame. Measure this once on the day; it is the single calibration
         # between the acoustic bearing and the robot's heading.

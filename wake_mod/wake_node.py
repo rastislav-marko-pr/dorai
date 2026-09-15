@@ -125,14 +125,26 @@ class WakeMod(Node):
         # Word confidence floor on the endpointed result. Every true detection
         # measured came back at exactly 1.0; the false alarms that survived
         # the isolation rule in earlier experiments sat at 0.55-0.9.
-        self.declare_parameter("min_conf", 0.9, dyn)
+        # 2026-09-15: lowered to 0.6 together with require_isolated false. The
+        # demo requirement is that "artie" said anywhere in a sentence triggers
+        # reliably; 0.9 was tuned for the isolated-word rule. Every sighting of
+        # the keyword is now logged with its confidence, accepted or not, so
+        # this can be tuned from real data rather than guessed.
+        self.declare_parameter("min_conf", 0.6, dyn)
         # Require the endpointed utterance to be the keyword ALONE. This is
         # the rule that took false alarms to zero; see the module docstring
         # for the measurements. Setting it false accepts the keyword anywhere
         # inside a result, which is much more permissive and was measured to
         # false-trigger. Only turn it off if you need "marvin, come here" to
         # fire, and expect to pay for it.
-        self.declare_parameter("require_isolated", True)
+        #
+        # 2026-09-15: DEFAULT NOW FALSE. Demo requirement: if the keyword is
+        # heard anywhere in an utterance of a few seconds, trigger. The
+        # isolated rule silently dropped natural phrases like "come over here,
+        # artie" (logged only at debug level), so the robot looked deaf. The
+        # false-trigger cost is accepted; the bearing-confidence gate in the
+        # behaviour node and the camera's person check still stand behind it.
+        self.declare_parameter("require_isolated", False)
         self.declare_parameter("model_lang", "en-us")
         self.declare_parameter("model_path", "")
         # Refractory period after a trigger. A wake word said once produces
@@ -143,6 +155,13 @@ class WakeMod(Node):
         # sit and still be its bearing. 1.5 s is a little over one avg_tc of
         # the pooled SRP accumulator.
         self.declare_parameter("pair_window_s", 1.5, dyn)
+        # Bearing pairing now spans the whole UTTERANCE that contained the
+        # keyword, padded on both sides, and takes the most confident bearing
+        # seen anywhere in it. Pre covers speech the recogniser folded into the
+        # utterance start; post covers the pooled accumulator's lag, since a
+        # bearing firms up a little after the speech that produced it.
+        self.declare_parameter("pair_pre_s", 1.0, dyn)
+        self.declare_parameter("pair_post_s", 1.0, dyn)
         # Sub-chunk fed to the recogniser between partial checks. This is the
         # resolution of the reported stamp, and 0.1 s costs nothing.
         self.declare_parameter("chunk_s", 0.1, dyn)
@@ -157,6 +176,8 @@ class WakeMod(Node):
         self.require_isolated = bool(gp("require_isolated").value)
         self.refractory_s = float(gp("refractory_s").value)
         self.pair_window_s = float(gp("pair_window_s").value)
+        self.pair_pre_s = float(gp("pair_pre_s").value)
+        self.pair_post_s = float(gp("pair_post_s").value)
         self.chunk_s = float(gp("chunk_s").value)
         self.debug = bool(gp("debug").value)
 
@@ -339,10 +360,17 @@ class WakeMod(Node):
                 continue
             hit = self._match(words)
             if hit is not None:
-                # The word's own `end`, not the time we noticed it: Vosk
-                # endpoints about 0.8 s late and the bearing pairing needs the
-                # acoustic instant, not the detection instant.
-                self._fire(stream_t0 + float(hit["end"]), hit)
+                # Stamp is the END OF THE UTTERANCE on the acoustic clock: the
+                # wake is only decidable once the utterance is endpointed, and a
+                # keyword said early in a long sentence would otherwise arrive
+                # looking seconds stale. The bearing is paired over the whole
+                # utterance span.
+                try:
+                    u0 = stream_t0 + float(words[0]["start"])
+                    u1 = stream_t0 + float(words[-1]["end"])
+                except (KeyError, TypeError, ValueError):
+                    u0 = u1 = stream_t0 + float(hit["end"])
+                self._fire(u1, hit, span=(u0, u1))
 
     def _match(self, words):
         """The endpointed result, judged. Returns the keyword entry or None.
@@ -352,25 +380,36 @@ class WakeMod(Node):
         """
         if not words:
             return None
-        hits = [w for w in words
-                if w.get("word") == self.keyword
-                and float(w.get("conf", 0.0)) >= self.min_conf]
-        if not hits:
+        seen = [w for w in words if w.get("word") == self.keyword]
+        if not seen:
+            return None
+        best = max(seen, key=lambda w: float(w.get("conf", 0.0)))
+        conf = float(best.get("conf", 0.0))
+        spoken = [w.get("word") for w in words]
+        # Every sighting is logged at INFO, accepted or not. A silent reject is
+        # indistinguishable from a deaf robot, and cost a demo rehearsal.
+        if conf < self.min_conf:
+            self.get_logger().info(
+                f"keyword heard at conf {conf:.2f} < min_conf {self.min_conf:.2f}, "
+                f"rejected: {spoken}")
             return None
         if self.require_isolated and len(words) != 1:
-            self.get_logger().debug(
-                f"keyword seen inside a longer utterance "
-                f"({[w.get('word') for w in words]}); not a wake word.")
+            self.get_logger().info(
+                f"keyword heard inside a longer utterance with require_isolated "
+                f"on, rejected: {spoken}")
             return None
-        return hits[0]
+        return best
 
     # -- output --------------------------------------------------------------
-    def _fire(self, stamp, hit=None):
+    def _fire(self, stamp, hit=None, span=None):
         now = time.monotonic()
         if now - self._last_fire < self.refractory_s:
             return
         self._last_fire = now
-        bearing, conf = self._pair(stamp)
+        if span is not None:
+            bearing, conf = self._pair_span(*span)
+        else:
+            bearing, conf = self._pair(stamp)
         payload = {
             "v": SCHEMA_V,
             "topic": "wake",
@@ -385,6 +424,27 @@ class WakeMod(Node):
             f"WAKE {json.dumps(payload)}"
             + (f"  (word conf {hit['conf']:.2f}, "
                f"{hit['end'] - hit['start']:.2f}s long)" if hit else ""))
+
+    def _pair_span(self, t0, t1):
+        """Most confident bearing heard during the utterance [t0, t1], padded.
+
+        Demo rule (2026-09-15): if the bearing confidence rose above the gate
+        at ANY point while the person was speaking the sentence that contained
+        the keyword, the wake should carry that bearing. Taking the nearest
+        message to one instant, as _pair does, throws away a confident bearing
+        from two seconds earlier in the same sentence in favour of a weak one
+        at the keyword itself, and an isolated short word is exactly where the
+        pooled estimate is weakest.
+
+        The confidence is passed through as measured even when that message was
+        not `valid`; the behaviour node owns the gate.
+        """
+        lo, hi = t0 - self.pair_pre_s, t1 + self.pair_post_s
+        inside = [d for d in self._doa if lo <= d[0] <= hi]
+        if not inside:
+            return self._pair(t1)
+        d = max(inside, key=lambda e: e[2])
+        return d[1], d[2]
 
     def _pair(self, stamp):
         """Bearing whose stamp is nearest the wake word's audio window.
