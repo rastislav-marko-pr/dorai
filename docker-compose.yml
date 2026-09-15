@@ -147,11 +147,16 @@ services:
     # has a genuinely STATIONARY interferer (it recovered 13.0 -> 7.5 deg on
     # the vendor's session, which had a fan at ~280 deg). It carves out
     # whatever it has learned, so it hurts if that source moves.
+    # avg_tc:=0.7, not the vendor's 2.0: the pooled forget time IS the lag
+    # between a talker moving and the bearing following them, and at 2.0 it
+    # took several seconds of speech to swing. 0.7 is what the first armed
+    # hardware runs used (2026-09-10). It is live-tunable with
+    # `ros2 param set /doa_mod avg_tc <s>`; lower reacts faster, higher is steadier.
     command: >
       ros2 run doa_mod doa --ros-args
       -p hop:=512
       -p subtract_noise:=false
-      -p avg_tc:=2.0
+      -p avg_tc:=0.7
     restart: unless-stopped
 
   # Wake word — /dorai/wake, per DEMO_INTERFACES.
@@ -186,9 +191,15 @@ services:
       - dorai-models:/root/.cache
     depends_on:
       - voice
+    # Keyword "artie", the short form of Artaban. The robot's full name is
+    # outside the Vosk small-en-us lexicon, so a grammar containing it can
+    # never fire (wake_mod refuses to start on an out-of-vocabulary word);
+    # "artie" is in it and keeps the robot's identity. It is phonetically
+    # close to "party"/"arty", so re-check false triggers with a few minutes
+    # of ordinary conversation before a demo. Fallback: panza.
     command: >
       ros2 run wake_mod wake --ros-args
-      -p keyword:=marvin
+      -p keyword:=artie
     restart: unless-stopped
 
   # UDP bridge to ROS 1 Noetic on the atb host — the container half only; the
