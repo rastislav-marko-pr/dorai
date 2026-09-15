@@ -65,6 +65,8 @@ import collections
 import importlib
 import json
 import math
+import os
+import subprocess
 
 import rospy
 from geometry_msgs.msg import Twist
@@ -279,6 +281,32 @@ class BehaviourNode(object):
         # 0.071 is the real forward floor; 0.10 clears it by 40% and clears the
         # yaw band (scale 1.0) twice over.
         self.min_cmd_magnitude = float(rospy.get_param("~min_cmd_magnitude", 0.10))
+
+        # -- arrival announcement ---------------------------------------------
+        # Spoken ONLY when the approach genuinely reached the standoff, by sight
+        # or by dead reckoning. Every other way into `stopped` (a failed turn, a
+        # person lost with no usable fix, a blind leg that timed out) stays
+        # silent: a robot announcing it is ready to assist straight after
+        # failing to find anybody is worse than one that says nothing.
+        #
+        # The WAV is pre-rendered (espeak-ng) and ships in this package, so the
+        # robot needs no text-to-speech engine. Playback goes through aplay,
+        # the same path the existing "bark" service uses.
+        #
+        # The device is pinned by the card's NAME. The ALSA default does not
+        # reach the speakers on atb (see web_mod's play_device note), and card
+        # NUMBERS move across reboots, so never hw:0,0.
+        #
+        # The ReSpeaker hears the phrase. That is accepted: it does not contain
+        # the wake keyword, and the gate needs the keyword alone, so it cannot
+        # retrigger the robot; the dashboard dial will briefly point at the
+        # robot's own speaker.
+        self.speak_on_arrival = bool(rospy.get_param("~speak_on_arrival", True))
+        self.arrival_sound = str(rospy.get_param(
+            "~arrival_sound", self._default_sound("ready_to_assist.wav")))
+        self.audio_device = str(rospy.get_param(
+            "~audio_device", "plughw:CARD=PCH,DEV=0"))
+        self._player = None
 
         # -- state ----------------------------------------------------------
         self.state = S_IDLE
@@ -645,6 +673,42 @@ class BehaviourNode(object):
 
     # ---- state machine -----------------------------------------------------
 
+    @staticmethod
+    def _default_sound(name):
+        """Path of a sound shipped in this package's sounds/ directory."""
+        try:
+            import rospkg
+            return os.path.join(rospkg.RosPack().get_path("dorai_demo"),
+                                "sounds", name)
+        except Exception:
+            # Fall back to the script's own location. realpath follows the
+            # devel/ symlink back to the source tree, where sounds/ lives.
+            here = os.path.dirname(os.path.realpath(__file__))
+            return os.path.join(here, os.pardir, "sounds", name)
+
+    def announce_arrival(self):
+        """Play the arrival phrase without blocking the 25 Hz control loop.
+
+        Fire and forget: aplay runs as a child process and the tick carries on.
+        A failure to play is logged and never allowed to affect control; the
+        robot has already stopped by the time this matters.
+        """
+        if not self.speak_on_arrival:
+            return
+        if self._player is not None and self._player.poll() is None:
+            return  # still speaking; do not stack a second copy on top
+        if not os.path.isfile(self.arrival_sound):
+            rospy.logwarn("arrival sound not found at %s, staying silent",
+                          self.arrival_sound)
+            return
+        try:
+            self._player = subprocess.Popen(
+                ["aplay", "-q", "-D", self.audio_device, self.arrival_sound],
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            rospy.loginfo("announcing arrival on %s", self.audio_device)
+        except OSError as exc:
+            rospy.logwarn("could not start aplay (%s), staying silent", exc)
+
     def enter(self, state):
         if state == self.state:
             return
@@ -778,6 +842,7 @@ class BehaviourNode(object):
                                   self.blind["budget_m"],
                                   "odometry" if odom_ok else "commanded speed")
                     self.enter(S_STOPPED)
+                    self.announce_arrival()
                 elif (now - self.blind["since"]) > self.max_blind_time_s:
                     rospy.logwarn("blind approach timed out with %.2f m left",
                                   remaining_m)
@@ -811,6 +876,7 @@ class BehaviourNode(object):
                 if distance <= self.standoff_m:
                     rospy.loginfo("standoff reached at %.2f m", distance)
                     self.enter(S_STOPPED)
+                    self.announce_arrival()
                 else:
                     cmd.angular.z = floor_magnitude(
                         clamp(self.approach_yaw_kp * math.radians(bearing),
