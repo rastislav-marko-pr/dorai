@@ -207,7 +207,7 @@ class BehaviourNode(object):
         self.acquire_timeout_s = float(rospy.get_param("~acquire_timeout_s", 4.0))
 
         # -- approach -------------------------------------------------------
-        self.standoff_m = float(rospy.get_param("~standoff_m", 0.7))
+        self.standoff_m = float(rospy.get_param("~standoff_m", 1.1))
         self.approach_speed = float(rospy.get_param("~approach_speed", 0.5))
         self.approach_kp = float(rospy.get_param("~approach_kp", 0.4))
         # Floor for the tapered end of the approach, in COMMANDED units. The
@@ -218,7 +218,7 @@ class BehaviourNode(object):
         # operator's report that the robot responds badly to small commands is
         # exactly this. 0.20 gives 0.14 m/s on the ground, 2.8x the threshold.
         # Cost: the measured 0.78 s stop latency now carries ~0.11 m past the
-        # standoff instead of ~0.065 m, so a 0.7 m standoff settles near 0.59 m.
+        # standoff instead of ~0.065 m, so a 1.1 m standoff settles near 1.0 m.
         self.approach_min_speed = float(rospy.get_param("~approach_min_speed", 0.20))
         self.approach_yaw_kp = float(rospy.get_param("~approach_yaw_kp", 1.0))
         # Beyond this bearing error, turn on the spot instead of driving a long
@@ -240,7 +240,7 @@ class BehaviourNode(object):
         # The camera sits low, so a standing person leaves the TOP of the frame
         # as the robot closes in. Detection therefore works far and fails near,
         # the opposite of the usual failure. Measured: reliable around 3 m, gone
-        # by roughly 1.8 m. The demo starts at 3 m and must finish at 0.7 m, so
+        # by roughly 1.8 m. The demo starts at 3 m and must finish at 1.1 m, so
         # losing the person on the way in is the NORMAL case, not an anomaly,
         # and stopping on loss would strand the robot a metre short every time.
         #
@@ -254,8 +254,8 @@ class BehaviourNode(object):
         # slid towards whatever part remained visible and its depth with it.
         self.memory_window_s = float(rospy.get_param("~memory_window_s", 1.0))
         self.memory_min_samples = int(rospy.get_param("~memory_min_samples", 3))
-        # Hard ceilings on blind travel. The expected blind leg is about 1.1 m
-        # (1.8 down to 0.7); anything much past that means the fix was wrong, so
+        # Hard ceilings on blind travel. The expected blind leg is about 0.7 m
+        # (1.8 down to 1.1; standoff raised from 0.7 on 2026-09-18); anything much past that means the fix was wrong, so
         # stop rather than keep walking on a stale belief.
         self.max_blind_distance_m = float(
             rospy.get_param("~max_blind_distance_m", 2.0))

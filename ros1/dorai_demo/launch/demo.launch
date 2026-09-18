@@ -95,13 +95,14 @@
          before relying on a default you did not set here. -->
     <param name="yaw_rate"        value="0.4"/>
     <param name="approach_speed"  value="0.5"/>
-    <!-- The demo starts at 3 m and finishes at 0.7 m. Because the camera sits
+    <!-- The demo starts at 3 m and finishes at 1.1 m. Because the camera sits
          low, a standing person leaves the TOP of the frame as the robot closes
          in, so detection works far and fails near: reliable around 3 m, gone by
          roughly 1.8 m. Losing the person on the way in is therefore the NORMAL
-         case, and the last ~1.1 m is walked on a remembered, averaged fix.
+         case, and the last ~0.7 m is walked on a remembered, averaged fix.
+         Standoff raised from 0.7 to 1.1 m on 2026-09-18.
          See the dead-reckoning block in behaviour_node.py for the bounds. -->
-    <param name="standoff_m"      value="0.7"/>
+    <param name="standoff_m"      value="1.1"/>
     <param name="blind_approach"  value="true"/>
   </node>
 </launch>

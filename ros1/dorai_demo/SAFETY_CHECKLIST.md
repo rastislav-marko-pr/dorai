@@ -160,16 +160,16 @@ how quickly the robot gives up.
 ## 5. Clear floor in the approach direction
 
 The robot drives forward until the person is at the standoff distance, currently
-**0.7 m** (`~standoff_m`, set in demo.launch), and it turns first towards
+**1.1 m** (`~standoff_m`, set in demo.launch), and it turns first towards
 wherever the wake word came from. That direction is not known in advance.
 
 - Clear a corridor at least **4 m long and 2 m wide** in every direction the
-  robot might turn towards. It stops 0.7 m from the person, so a person standing
-  3 m away means 2.3 m of actual travel, plus overshoot.
-- **0.7 m is close.** The measured stop latency is about 0.78 s, and at the demo
+  robot might turn towards. It stops 1.1 m from the person, so a person standing
+  3 m away means 1.9 m of actual travel, plus overshoot.
+- **Expect it to end nearer than 1.1 m.** The measured stop latency is about 0.78 s, and at the demo
   approach speed that carries roughly a further 0.11 m, so expect the robot to
-  come to rest around 0.6 m from the target person. Brief them on that number
-  before they stand there; it is well inside arm's reach.
+  come to rest around 1.0 m from the target person. Brief them on that number
+  before they stand there.
 - No cables, no bags, no laptop on the floor, no chair legs in the path.
 - Audience stands behind the robot or well to the side, never in the approach
   corridor next to the target person.
